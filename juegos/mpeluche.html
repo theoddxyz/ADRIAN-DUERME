@@ -1,0 +1,1516 @@
+  btnDrop.addEventListener('click', playDropMelody);
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=800, height=1600, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Claw Machine – Matter.js</title>
+  <style>
+    /* Evita el resaltado azul en sprites y botones al hacer click y arrastrar */
+    button, img {
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      outline: none;
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #342E28FF;
+      color: #e7e9ee;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      touch-action: none;
+      overscroll-behavior: none;
+      overflow-y: auto !important;
+    }
+    .fixed-center {
+      position: relative;
+      margin: 40px auto;
+      width: 1100px;
+      height: 1600px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      background: #342E28FF;
+      z-index: 10;
+      box-shadow: none;
+      border-radius: 12px;
+    }
+    #stage {
+      width: 800px;
+      height: 1600px;
+      position: relative;
+      margin: 0;
+      box-sizing: border-box;
+      background: #000;
+      border-radius: 12px;
+      z-index: 11;
+      border: 32px solid #342E28FF;
+      /* #342E28FF es el color de fondo solicitado */
+  clip-path: inset(90px 80px 420px 140px); /* recorta desde arriba, abajo, izquierda y ahora también derecha */
+    }
+    #joystick3d-container {
+      position: absolute;
+      left: 50%;
+      top: 440px;
+      transform: translateX(-50%);
+      z-index: 12;
+      pointer-events: auto;
+      box-shadow: none;
+    }
+    #hud { position: fixed; top: 12px; left: 12px; background: rgba(0,0,0,.45); padding: 10px 12px; border-radius: 12px; backdrop-filter: blur(4px); }
+    #hud b { color: #fff; }
+  canvas { border-radius: 12px; box-shadow: none; background: #000; }
+    .btnbar { position: fixed; top: 12px; right: 12px; display:flex; gap:8px }
+    .btn { background:#1964d6; color:#fff; border:none; padding:8px 10px; border-radius:10px; cursor:pointer }
+    .btn:active { transform: translateY(1px) }
+  </style>
+</head>
+<body>
+  <div id="sillon-ui" style="position:fixed;top:20px;right:20px;z-index:1000;background:#fff;padding:12px;border-radius:8px;box-shadow:0 2px 8px #0002;">
+    <label style="display:block;margin-bottom:6px;">Ancho collider SILLON
+      <input type="range" id="sillon-width" min="20" max="400" value="192" style="width:120px;">
+      <span id="sillon-width-val">192</span>
+    </label>
+    <label style="display:block;margin-bottom:6px;">Alto collider SILLON
+      <input type="range" id="sillon-height" min="10" max="200" value="33" style="width:120px;">
+      <span id="sillon-height-val">33</span>
+    </label>
+    <button id="sillon-apply" style="margin-top:8px;">Aplicar tamaño</button>
+  </div>
+  <!--
+    Ruta: /public/index.html
+    Juego de garra tipo "claw machine" usando Matter.js.
+    Controles: ← → mover carro | ↑ ↓ cuerda | ESPACIO agarrar/soltar | R reiniciar
+    Nota: La garra "agarra" creando un constraint al peluche más cercano dentro del radio.
+  -->
+  <div class="fixed-center" style="position:relative;">
+  <img id="maquina-sprite" src="maquinasp.png" style="position:absolute; left:90px; top:-420px; width:997px; height:2254px; pointer-events:none; z-index:20;" alt="maquina sprite">
+    <div id="stage">
+  <div id="youtube-video-container" style="position:absolute; left:50%; top:460px; transform:translateX(-50%); width:420px; height:236px; display:none !important; z-index:50;">
+  <iframe id="youtube-video" width="420" height="236" src="https://www.youtube.com/embed/dQw4w9WgXcQ" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+      </div>
+    </div>
+  <div id="cruz-move" style="position:absolute; left:640px; top:328px; z-index:30;">
+      <div style="display:flex; flex-direction:row; align-items:flex-start; gap:12px;">
+        <div id="col-soltar" style="display:flex; flex-direction:column; align-items:flex-end; justify-content:center;">
+          <div style="position:relative; width:120px; height:40px;">
+            <button class="btn" id="btnDrop" style="width:120px; height:40px; margin-bottom:10px; opacity:0; pointer-events:auto;">Soltar peluche</button>
+            <button id="btnSpace" style="width:80px; height:80px; border-radius:50%; background:#1964d6; color:#fff; font-size:32px; border:none; box-shadow:0 2px 8px #0003; cursor:pointer; z-index:100; position:relative; margin:4px 0 0 16px; opacity:0; pointer-events:auto;">⎵</button>
+            <img id="garrita-sprite" src="garrita.png" style="position:absolute; left:8px; top:-17px; width:239px; height:auto; pointer-events:none; display:none; z-index:101;" alt="garrita pressed sprite">
+            <img id="lancita-sprite-drop" src="lancita.png" style="position:absolute; left:8px; top:-17px; width:239px; height:auto; pointer-events:none; display:none; z-index:10;" alt="lanzador pressed sprite">
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:2px;">
+          <button id="btnUp" style="width:40px; height:40px;">▲</button>
+          <div style="display:flex; flex-direction:row; gap:18px;">
+            <div style="position:relative; width:40px; height:40px;">
+              <button id="btnLeft" style="width:40px; height:40px;">◀</button>
+              <img id="izquierdita-normal" src="noaction.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:block; z-index:9;" alt="izquierda normal sprite">
+              <img id="izquierdita-sprite" src="izquierdita.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:none; z-index:10;" alt="izquierda pressed sprite">
+              <img id="arribita-normal" src="noaction.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:block; z-index:9;" alt="arriba normal sprite">
+              <img id="arribita-sprite" src="arribita.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:none; z-index:10; filter:brightness(1.18);" alt="arriba pressed sprite">
+              <img id="abajito-normal" src="noaction.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:block; z-index:9;" alt="abajo normal sprite">
+              <img id="abajito-sprite" src="abajito.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:none; z-index:10;" alt="abajo pressed sprite">
+              <img id="derechita-normal" src="noaction.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:block; z-index:9;" alt="derecha normal sprite">
+              <img id="derechita-sprite" src="derechita.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:none; z-index:10;" alt="derecha pressed sprite">
+              <img id="lancita-sprite" src="lancita.png" style="position:absolute; left:-124px; top:-59px; width:239px; height:auto; pointer-events:none; display:none; z-index:10;" alt="lanzador pressed sprite">
+            </div>
+            <button id="btnRight" style="width:40px; height:40px;">▶</button>
+          </div>
+          <button id="btnDown" style="width:40px; height:40px; margin-top:2px;">▼</button>
+        </div>
+      </div>
+      <div id="sprite-controls" style="margin-top:32px; background:#eef; border-radius:12px; padding:18px 24px; box-shadow:0 2px 8px #0002; display:flex; flex-direction:column; gap:18px; max-width:420px;">
+        <div style="font-weight:bold; margin-bottom:8px;">Ajuste de sprite izquierdo</div>
+  <label>Posición X: <input type="range" id="slider-x" min="-300" max="300" value="-124" style="width:260px;"> <input type="number" id="input-x" min="-300" max="300" value="-124" style="width:70px;"></label>
+  <label>Posición Y: <input type="range" id="slider-y" min="-300" max="300" value="-59" style="width:260px;"> <input type="number" id="input-y" min="-300" max="300" value="-59" style="width:70px;"></label>
+  <label>Tamaño (ancho px): <input type="range" id="slider-w" min="40" max="600" value="239" style="width:260px;"> <input type="number" id="input-w" min="40" max="600" value="239" style="width:70px;"></label>
+        <div id="sprite-log" style="margin-top:12px; font-size:15px; color:#234; background:#dde; border-radius:8px; padding:8px 12px;">left: -125, top: -58, width: 249</div>
+      </div>
+    </div>
+  </div>
+  <div id="hud" style="display:none;">Puntaje: <b id="score">0</b> &nbsp; · &nbsp; Restantes: <b id="left">0</b></div>
+  <style>#hud, .btnbar, #sprite-controls { display: none !important; }</style>
+  <div class="btnbar" style="left:720px; right:auto; top:350px; position:absolute; z-index:40;">
+  <!-- Botón eliminado, ahora está dentro de la cruz -->
+    </div>
+
+  <script type="module">
+  // Simple Physics Fallback when Matter.js is not available
+  window.SimpleMatter = {
+    Engine: {
+      create: () => ({
+        world: { gravity: { y: 1 }, bodies: [] },
+        timing: { timeScale: 1 }
+      }),
+      clear: () => {},
+      run: () => {}
+    },
+    Render: {
+      create: (options) => ({
+        element: options.element,
+        engine: options.engine,
+        canvas: null,
+        context: null,
+        options: options.options || {}
+      }),
+      run: (render) => {
+        if (!render.canvas) {
+          render.canvas = document.createElement('canvas');
+          render.canvas.width = 800;
+          render.canvas.height = 1600;
+          render.canvas.style.borderRadius = '12px';
+          render.canvas.style.background = '#000';
+          render.element.appendChild(render.canvas);
+          render.context = render.canvas.getContext('2d');
+        }
+      }
+    },
+    Runner: {
+      create: () => ({}),
+      run: (runner, engine) => {
+        setInterval(() => {
+          if (window.gameLoop) window.gameLoop();
+        }, 16);
+      }
+    },
+    World: {
+      add: (world, bodies) => {
+        if (!Array.isArray(bodies)) bodies = [bodies];
+        world.bodies.push(...bodies);
+      },
+      remove: (world, bodies) => {
+        if (!Array.isArray(bodies)) bodies = [bodies];
+        bodies.forEach(body => {
+          const index = world.bodies.indexOf(body);
+          if (index > -1) world.bodies.splice(index, 1);
+        });
+      },
+      clear: () => {}
+    },
+    Bodies: {
+      rectangle: (x, y, w, h, options = {}) => ({
+        position: { x, y },
+        velocity: { x: 0, y: 0 },
+        angle: 0,
+        angularVelocity: 0,
+        bounds: { min: { x: x - w/2, y: y - h/2 }, max: { x: x + w/2, y: y + h/2 }},
+        width: w,
+        height: h,
+        render: options.render || { fillStyle: '#fff' },
+        label: options.label || '',
+        isStatic: options.isStatic || false,
+        isSensor: options.isSensor || false,
+        plugin: options.plugin || {},
+        ...options
+      }),
+      circle: (x, y, r, options = {}) => ({
+        position: { x, y },
+        velocity: { x: 0, y: 0 },
+        angle: 0,
+        angularVelocity: 0,
+        bounds: { min: { x: x - r, y: y - r }, max: { x: x + r, y: y + r }},
+        radius: r,
+        render: options.render || { fillStyle: '#fff' },
+        label: options.label || '',
+        isStatic: options.isStatic || false,
+        isSensor: options.isSensor || false,
+        plugin: options.plugin || {},
+        ...options
+      })
+    },
+    Body: {
+      setPosition: (body, pos) => { body.position = pos; },
+      setVelocity: (body, vel) => { body.velocity = vel; },
+      setAngle: (body, angle) => { body.angle = angle; },
+      setAngularVelocity: (body, vel) => { body.angularVelocity = vel; },
+      setInertia: () => {},
+      create: (options) => ({ ...options }),
+      nextGroup: () => 1
+    },
+    Constraint: {
+      create: (options) => ({ ...options })
+    },
+    Events: {
+      on: (engine, event, callback) => {
+        if (event === 'beforeUpdate') {
+          window.beforeUpdateCallbacks = window.beforeUpdateCallbacks || [];
+          window.beforeUpdateCallbacks.push(callback);
+        } else if (event === 'afterRender') {
+          window.afterRenderCallbacks = window.afterRenderCallbacks || [];
+          window.afterRenderCallbacks.push(callback);
+        }
+      }
+    },
+    Vector: {
+      magnitude: (v) => Math.sqrt(v.x * v.x + v.y * v.y),
+      sub: (a, b) => ({ x: a.x - b.x, y: a.y - b.y })
+    },
+    Mouse: {
+      create: () => ({ position: { x: 0, y: 0 }})
+    },
+    MouseConstraint: {
+      create: () => ({})
+    },
+    Vertices: {
+      create: (points) => points
+    },
+    Composite: {
+      create: (options) => ({ ...options })
+    }
+  };
+
+  // Use fallback if Matter is not available
+  if (typeof Matter === 'undefined') {
+    window.Matter = window.SimpleMatter;
+    console.log('Using simplified physics fallback');
+    
+    // Simple game loop for fallback physics
+    window.gameLoop = function() {
+      if (window.beforeUpdateCallbacks) {
+        window.beforeUpdateCallbacks.forEach(cb => cb());
+      }
+      
+      // Simple drawing
+      if (window.render && window.render.context && window.world) {
+        const ctx = window.render.context;
+        ctx.clearRect(0, 0, 800, 1600);
+        
+        // Draw all bodies
+        window.world.bodies.forEach(body => {
+          if (!body) return;
+          
+          ctx.save();
+          ctx.translate(body.position.x, body.position.y);
+          ctx.rotate(body.angle || 0);
+          
+          if (body.render && body.render.fillStyle) {
+            ctx.fillStyle = body.render.fillStyle;
+          } else {
+            ctx.fillStyle = '#fff';
+          }
+          
+          if (body.render && body.render.strokeStyle) {
+            ctx.strokeStyle = body.render.strokeStyle;
+            ctx.lineWidth = body.render.lineWidth || 1;
+          }
+          
+          if (body.radius) {
+            // Circle
+            ctx.beginPath();
+            ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+            ctx.fill();
+            if (body.render && body.render.strokeStyle) ctx.stroke();
+          } else if (body.width && body.height) {
+            // Rectangle
+            ctx.fillRect(-body.width/2, -body.height/2, body.width, body.height);
+            if (body.render && body.render.strokeStyle) {
+              ctx.strokeRect(-body.width/2, -body.height/2, body.width, body.height);
+            }
+          }
+          
+          ctx.restore();
+        });
+      }
+      
+      if (window.afterRenderCallbacks) {
+        window.afterRenderCallbacks.forEach(cb => cb());
+      }
+    };
+  }
+// Mostrar video de YouTube cuando el sensor-premio detecta impacto con ragdoll
+function showYoutubeVideo() {
+  const container = document.getElementById('youtube-video-container');
+  if (container) container.style.display = '';
+}
+// UI para cambiar tamaño del collider del SILLON
+let sillonBodyRef = null;
+function setSillonBodyRef(body) { sillonBodyRef = body; }
+
+window.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('sillon-width').addEventListener('input', function(e) {
+    document.getElementById('sillon-width-val').textContent = e.target.value;
+  });
+  document.getElementById('sillon-height').addEventListener('input', function(e) {
+    document.getElementById('sillon-height-val').textContent = e.target.value;
+  });
+  document.getElementById('sillon-apply').addEventListener('click', function() {
+    if (!sillonBodyRef) return;
+    const w = parseFloat(document.getElementById('sillon-width').value);
+    const h = parseFloat(document.getElementById('sillon-height').value);
+    Matter.Body.setVertices(sillonBodyRef, Matter.Vertices.create([
+      {x: -w/2, y: -h/2},
+      {x:  w/2, y: -h/2},
+      {x:  w/2, y:  h/2},
+      {x: -w/2, y:  h/2}
+    ], sillonBodyRef));
+  });
+});
+// Sonido eléctrico de motorcito muy bajo para el movimiento lateral de la grúa
+let motorOsc = null, motorGain = null;
+function startMotorSound() {
+  try {
+    const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+    if (!motorOsc) {
+      motorOsc = ctx.createOscillator();
+      motorGain = ctx.createGain();
+      motorOsc.type = 'sawtooth';
+      motorOsc.frequency.value = 68;
+  motorGain.gain.value = 0.006; // volumen aún más bajo
+      motorOsc.connect(motorGain); motorGain.connect(ctx.destination);
+      motorOsc.start();
+    }
+  } catch(e){}
+}
+function stopMotorSound() {
+  try {
+    if (motorOsc) {
+      motorOsc.stop();
+      motorOsc.disconnect();
+      motorOsc = null;
+    }
+    if (motorGain) {
+      motorGain.disconnect();
+      motorGain = null;
+    }
+  } catch(e){}
+}
+// Sonido de cadena descendente (bajar)
+function playChainDown() {
+  try {
+    const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+    const notes = [120, 98, 82, 68]; // escala descendente, familia motor
+    notes.forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.value = freq;
+  g.gain.value = 0.022 - i*0.005; // volumen más bajo
+      o.connect(g); g.connect(ctx.destination);
+      o.start(ctx.currentTime + i*0.04);
+      o.stop(ctx.currentTime + i*0.04 + 0.07);
+      g.gain.linearRampToValueAtTime(0.005, ctx.currentTime + i*0.04 + 0.07);
+    });
+  } catch(e){}
+}
+// Sonido de cadena ascendente (subir)
+function playChainUp() {
+  try {
+    const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+    const notes = [68, 82, 98, 120]; // escala ascendente, familia motor
+    notes.forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.value = freq;
+  g.gain.value = 0.022 - i*0.005; // volumen más bajo
+      o.connect(g); g.connect(ctx.destination);
+      o.start(ctx.currentTime + i*0.04);
+      o.stop(ctx.currentTime + i*0.04 + 0.07);
+      g.gain.linearRampToValueAtTime(0.005, ctx.currentTime + i*0.04 + 0.07);
+    });
+  } catch(e){}
+}
+  // Sonido mecánico rápido y juicy para el botón de barra espaciadora
+  function playJuicyClick() {
+    try {
+      const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'square';
+      o.frequency.value = 340;
+      g.gain.value = 0.18;
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      g.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.04);
+      o.frequency.linearRampToValueAtTime(120, ctx.currentTime + 0.04);
+      o.stop(ctx.currentTime + 0.06);
+    } catch(e){}
+  }
+
+  // Sonido mudo de goma para flechas
+  function playRubberClick() {
+    try {
+      const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 220;
+      g.gain.value = 0.025;
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      g.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.03);
+      o.frequency.linearRampToValueAtTime(120, ctx.currentTime + 0.03);
+      o.stop(ctx.currentTime + 0.045);
+    } catch(e){}
+  }
+
+  // Micro melodía menor para soltar peluches
+  function playDropMelody() {
+    try {
+      const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+      const notes = [220, 196, 174, 164]; // A3, G3, F3, E3 (menor)
+      notes.forEach((freq, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'triangle';
+        o.frequency.value = freq;
+        g.gain.value = 0.18 - i*0.03;
+        o.connect(g); g.connect(ctx.destination);
+        o.start(ctx.currentTime + i*0.07);
+        o.stop(ctx.currentTime + i*0.07 + 0.09);
+        g.gain.linearRampToValueAtTime(0.01, ctx.currentTime + i*0.07 + 0.09);
+      });
+    } catch(e){}
+  }
+  // Mostrar garrita.png al presionar el botón de barra espaciadora
+  const btnSpace = document.getElementById('btnSpace');
+  const garritaSprite = document.getElementById('garrita-sprite');
+  btnSpace.addEventListener('mousedown', () => {
+  playJuicyClick();
+    if (garritaSprite) garritaSprite.style.display = '';
+  });
+  btnSpace.addEventListener('mouseup', () => {
+    if (garritaSprite) garritaSprite.style.display = 'none';
+  });
+  btnSpace.addEventListener('mouseleave', () => {
+    if (garritaSprite) garritaSprite.style.display = 'none';
+  });
+  // Permitir que la barra espaciadora física active el botón de garrita
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      playJuicyClick();
+      if (garritaSprite) garritaSprite.style.display = '';
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') {
+      if (garritaSprite) garritaSprite.style.display = 'none';
+    }
+  });
+  // Botón que simula la barra espaciadora
+  document.getElementById('btnSpace').addEventListener('click', function() {
+    const evt = new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true });
+    window.dispatchEvent(evt);
+    setTimeout(() => {
+      const evtUp = new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true });
+      window.dispatchEvent(evtUp);
+    }, 80);
+  });
+  // Valores definitivos del sprite elegidos por el usuario
+  const spriteX = -63, spriteY = -317, spriteW = 997, spriteH = 2254;
+  // Joystick 3D eliminado. Ahora se usa una cruz de botones.
+
+  // Sprite de la máquina
+  const maquinaImg = new window.Image();
+  maquinaImg.src = 'maquinasp.png';
+  (function() {
+    const {
+      Engine, Render, Runner, World, Bodies, Body, Composite,
+      Constraint, Events, Vector, Mouse, MouseConstraint
+    } = Matter;
+
+    // --- Configuración
+    const W = 800, H = 1600; // máquina mucho más alta
+    const RAIL_Y = 90;                 // Altura del riel
+    const CLAW_RADIUS = 22;            // Radio del cuerpo de la garra
+    const GRAB_RADIUS = 32;            // Distancia para enganchar peluches
+  const CARRIAGE_SPEED = 3.2;        // Empuje por frame (más rápido)
+    const WORLD_GRAVITY = 1.0;
+    const PELUCHES = 18;               // Cantidad inicial
+
+    // Eslabones de cadena (circulares)
+  const LINK_R = 10, LINK_SPACING = 3;
+  const CHAIN_MIN_LINKS = 1, CHAIN_MAX_LINKS = 10, CHAIN_INIT_LINKS = 1;
+
+    // Brazos mecánicos de la garra
+    const FINGER_LEN = 68, FINGER_W = 14;
+  const FINGER_OPEN_GAP = 96, FINGER_CLOSED_GAP = 8; // distancia entre puntas (más cerrado)
+  const FINGER_SPEED = 0.35; // rapidez de animación (más rápido)
+    const FINGER_TOE_LEN = 28, FINGER_TOE_THICK = 10; // "pie" horizontal de los dedos en forma de L 
+
+
+    // --- Estado
+    let engine, render, runner, world;
+    let carriage, claw;
+    let chainGroup;
+    let chain = { links: [], constraints: [], carriageConstraint: null, clawConstraint: null };
+    let grabConstraint = null;         // Une garra ↔ peluche
+    let score = 0;
+    let plushes = [];
+    let keys = { left:false, right:false };
+    let canToggleGrab = true;          // Previene spam de espacio
+    let wheelAcc = 0;                  // Acumulador para scroll fino
+    let leftFinger = null, rightFinger = null, fingerPivotL = null, fingerPivotR = null;
+    let leftTarget = 0, rightTarget = 0;
+    let armsClosed = false;            // Estado visual de los brazos
+
+    // --- Inicio
+    init();
+
+    function init() {
+      engine = Engine.create();
+      engine.world.gravity.y = WORLD_GRAVITY;
+      world = engine.world;
+
+      render = Render.create({
+        element: document.getElementById('stage'),
+        engine,
+        options: {
+          width: W,
+          height: H,
+          wireframes: false,
+          background: 'transparent',
+          pixelRatio: 1,
+          hasBounds: true
+        }
+      });
+      Render.run(render);
+      runner = Runner.create();
+      Runner.run(runner, engine);
+    // --- Controles para el sprite izquierdo ---
+    function updateSpriteFromInputs() {
+      const x = parseInt(document.getElementById('input-x').value);
+      const y = parseInt(document.getElementById('input-y').value);
+      const w = parseInt(document.getElementById('input-w').value);
+      const izqSprite = document.getElementById('izquierdita-sprite');
+      if (izqSprite) {
+        izqSprite.style.left = x + 'px';
+        izqSprite.style.top = y + 'px';
+        izqSprite.style.width = w + 'px';
+        document.getElementById('sprite-log').textContent = `left: ${x}, top: ${y}, width: ${w}`;
+      }
+    }
+    ['slider-x','input-x','slider-y','input-y','slider-w','input-w'].forEach(id => {
+      document.getElementById(id).addEventListener('input', function(e) {
+        const pair = id.startsWith('slider') ? id.replace('slider','input') : id.replace('input','slider');
+        document.getElementById(pair).value = this.value;
+        updateSpriteFromInputs();
+      });
+    });
+    // Inicializar valores
+    updateSpriteFromInputs();
+
+      buildArena();
+      buildClaw();
+      //spawnPlushes();
+  addMouse();
+  addWheel();
+  addHud();
+
+  // Eventos para la cruz de movimiento
+  // Flecha izquierda
+  const btnLeft = document.getElementById('btnLeft');
+  const izqSprite = document.getElementById('izquierdita-sprite');
+  const izqNormal = document.getElementById('izquierdita-normal');
+  btnLeft.addEventListener('mousedown', () => {
+  playRubberClick();
+    keys.left = true;
+    if (izqSprite) izqSprite.style.display = '';
+    if (izqNormal) izqNormal.style.display = 'none';
+  });
+  btnLeft.addEventListener('mouseup', () => {
+    keys.left = false;
+    if (izqSprite) izqSprite.style.display = 'none';
+    if (izqNormal) izqNormal.style.display = 'block';
+  });
+  // Flecha derecha
+  const btnRight = document.getElementById('btnRight');
+  const derSprite = document.getElementById('derechita-sprite');
+  const derNormal = document.getElementById('derechita-normal');
+  btnRight.addEventListener('mousedown', () => {
+  playRubberClick();
+    if (derSprite) derSprite.style.display = '';
+    if (derNormal) derNormal.style.display = 'none';
+  });
+  btnRight.addEventListener('mouseup', () => {
+    if (derSprite) derSprite.style.display = 'none';
+    if (derNormal) derNormal.style.display = 'block';
+  });
+  // Flecha arriba
+  const btnUp = document.getElementById('btnUp');
+  const arrSprite = document.getElementById('arribita-sprite');
+  const arrNormal = document.getElementById('arribita-normal');
+  btnUp.addEventListener('mousedown', () => {
+  playRubberClick();
+    if (arrSprite) arrSprite.style.display = '';
+    if (arrNormal) arrNormal.style.display = 'none';
+  });
+  btnUp.addEventListener('mouseup', () => {
+    if (arrSprite) arrSprite.style.display = 'none';
+    if (arrNormal) arrNormal.style.display = 'block';
+  });
+  // Flecha abajo
+  const btnDown = document.getElementById('btnDown');
+  const abaSprite = document.getElementById('abajito-sprite');
+  const abaNormal = document.getElementById('abajito-normal');
+  btnDown.addEventListener('mousedown', () => {
+  playRubberClick();
+    if (abaSprite) abaSprite.style.display = '';
+    if (abaNormal) abaNormal.style.display = 'none';
+  });
+  btnDown.addEventListener('mouseup', () => {
+    if (abaSprite) abaSprite.style.display = 'none';
+    if (abaNormal) abaNormal.style.display = 'block';
+  });
+  document.getElementById('btnRight').addEventListener('mousedown', () => keys.right = true);
+  document.getElementById('btnRight').addEventListener('mouseup', () => keys.right = false);
+  // Opcional: flechas arriba/abajo para cuerda
+      // Flecha arriba: recoger cadena (mantener apretado)
+      let upHeld = false, downHeld = false;
+      let upInterval = null, downInterval = null;
+      const upBtn = document.getElementById('btnUp');
+      const downBtn = document.getElementById('btnDown');
+      function startUpHeld() {
+        if (upHeld) return;
+        upHeld = true;
+        upInterval = setInterval(() => {
+          if (chain.links.length > CHAIN_MIN_LINKS) {
+            playChainUp();
+            removeLink();
+          }
+        }, 120);
+      }
+      function stopUpHeld() {
+        upHeld = false;
+        if (upInterval) { clearInterval(upInterval); upInterval = null; }
+      }
+      function startDownHeld() {
+        if (downHeld) return;
+        downHeld = true;
+        downInterval = setInterval(() => {
+          if (chain.links.length < CHAIN_MAX_LINKS) {
+            playChainDown();
+            addLink();
+          }
+        }, 120);
+      }
+      function stopDownHeld() {
+        downHeld = false;
+        if (downInterval) { clearInterval(downInterval); downInterval = null; }
+      }
+      upBtn.addEventListener('mousedown', startUpHeld);
+      upBtn.addEventListener('mouseup', stopUpHeld);
+      upBtn.addEventListener('mouseleave', stopUpHeld);
+      downBtn.addEventListener('mousedown', startDownHeld);
+      downBtn.addEventListener('mouseup', stopDownHeld);
+      downBtn.addEventListener('mouseleave', stopDownHeld);
+      // También permitir click único
+      upBtn.addEventListener('click', () => {
+        if (chain.links.length > CHAIN_MIN_LINKS) {
+          playChainUp();
+          removeLink();
+        }
+      });
+      downBtn.addEventListener('click', () => {
+        if (chain.links.length < CHAIN_MAX_LINKS) {
+          playChainDown();
+          addLink();
+        }
+      });
+
+      Events.on(engine, 'beforeUpdate', tick);  // Física y control
+      Events.on(render, 'afterRender', drawOverlay); // HUD dentro del canvas
+  // Ya no se dibuja el sprite en afterRender, ahora es un <img> superpuesto fuera del canvas
+
+      // Controles
+      window.addEventListener('keydown', onKey);
+      window.addEventListener('keyup', onKey);
+      // Asegurar existencia de botones auxiliares (btnGrab, btnReset)
+      function ensureButton(id, text) {
+        let el = document.getElementById(id);
+        if (!el) {
+          const preferred = document.getElementById('cruz-move') || document.body;
+          const inner = preferred.querySelector && preferred.querySelector('div') ? preferred.querySelector('div') : preferred;
+          el = document.createElement('button');
+          el.id = id;
+          el.className = 'btn';
+          el.textContent = text;
+          el.style.marginTop = '8px';
+          inner.appendChild(el);
+        }
+        return el;
+      }
+  // Botón 'Agarrar' eliminado
+      // Vincular el event listener del botón de soltar peluche correctamente
+        let btnDrop = document.getElementById('btnDrop');
+        if (!btnDrop) {
+          // Si no existe, lo creamos y lo añadimos al contenedor preferido
+          const colSoltar = document.getElementById('col-soltar') || document.body;
+          btnDrop = document.createElement('button');
+          btnDrop.id = 'btnDrop';
+          btnDrop.className = 'btn';
+          btnDrop.textContent = 'Soltar peluche';
+          btnDrop.style.width = '120px';
+          btnDrop.style.height = '40px';
+          btnDrop.style.marginBottom = '10px';
+          colSoltar.appendChild(btnDrop);
+        }
+        // Usar onclick (idempotente) para evitar duplicar listeners si init() se corre varias veces
+        btnDrop.onclick = function() {
+          const ragdoll = createMiniRagdoll(260, 80, 0.45);
+          if (ragdoll.bodies) { World.add(world, ragdoll.bodies); if (ragdoll.constraints) World.add(world, ragdoll.constraints); }
+          else { World.add(world, ragdoll); }
+          plushes.push(ragdoll);
+          updateHud();
+        };
+        // --- listeners visuales para el sprite lancita (no tocan la simulación) ---
+        (function attachLancitaVisual(){
+          const lancitaDrop = document.getElementById('lancita-sprite-drop');
+          if (!lancitaDrop) return;
+    btnDrop.addEventListener('mousedown', () => { lancitaDrop.style.display = ''; playDropMelody(); });
+    btnDrop.addEventListener('mouseup', () => { lancitaDrop.style.display = 'none'; });
+        })();
+    }
+
+    function buildArena() {
+      // --- Objetos físicos cerca del sensor ---
+      // Proporciones de los sprites
+      const lamparaW = 120, lamparaH = 180; // ejemplo, ajustar si tienes medidas reales
+      const sillonW = 160, sillonH = 110;   // ejemplo, ajustar si tienes medidas reales
+      // Tamaño similar al sensor
+      const sensorW = 90, sensorH = 80;
+      // Calcula escala para mantener proporción y tamaño similar al sensor
+      const lamparaScale = Math.min(sensorW/lamparaW, sensorH/lamparaH);
+      const sillonScale = Math.min(sensorW/sillonW, sensorH/sillonH);
+      // Posiciones cerca del sensor
+      const lamparaX = W/2 - 120;
+      const lamparaY = H - 600;
+      const sillonX = W/2 + 120;
+      const sillonY = H - 600;
+      // Crea cuerpos físicos
+  const lamparaBody = Bodies.rectangle(lamparaX, lamparaY, lamparaW*lamparaScale*0.5, lamparaH*lamparaScale*1.2, {
+        restitution: 0.2,
+        friction: 0.8,
+        density: 0.002,
+        label: 'lampara',
+        render: {
+          sprite: { texture: 'LAMPARAAA.png', xScale: lamparaScale*0.625, yScale: lamparaScale*0.625 },
+          lineWidth: 3,
+          strokeStyle: '#ff00ff',
+          fillStyle: 'rgba(255,0,255,0.12)'
+        }
+      });
+  const sillonBody = Bodies.rectangle(sillonX, sillonY + 70, sillonW*sillonScale*1.2, 21, {
+        isStatic: false,
+        label: 'sillon',
+        friction: 1.5,
+        frictionStatic: 2.5,
+        frictionAir: 0.08,
+        density: 0.15,
+        render: {
+          sprite: { texture: 'SILLON.png', xScale: sillonScale*0.625, yScale: sillonScale*0.625, yOffset: 0.25 },
+          lineWidth: 3,
+          strokeStyle: '#00ff00',
+          fillStyle: 'rgba(0,255,0,0.12)'
+        }
+      });
+      World.add(world, [lamparaBody, sillonBody]);
+      setSillonBodyRef(sillonBody);
+      const wallOptions = { isStatic: true, render: { fillStyle: '#0f2248' } };
+
+      // Caja/vitrina
+      const thickness = 30;
+  const floor = Bodies.rectangle(W/2, H - thickness/2 - 340, W - 60, thickness, wallOptions);
+      // Piso
+  // Mover el extremo derecho del piso blanco hacia la izquierda un 30%
+  // Original: centro en W/2 - (W*0.05), ancho W*0.65
+  // Nuevo: reducir ancho y centrar para que el extremo derecho se desplace 30%
+  const originalWidth = W * 0.65;
+  const shiftPercent = 0.3;
+  const newWidth = originalWidth * (1 - shiftPercent); // 70% del ancho
+  // El centro debe moverse hacia la izquierda la mitad del desplazamiento del extremo derecho
+  const rightEdgeOriginal = W/2 - (W*0.05) + originalWidth/2;
+  const rightEdgeNew = rightEdgeOriginal - originalWidth * shiftPercent;
+  // Mover el extremo derecho un poco más a la derecha (sumar 20px)
+  const newCenter = (rightEdgeNew + 20) - newWidth/2;
+  const ground = Bodies.rectangle(newCenter, H/2 - 390, newWidth, 24, { isStatic: true, label: 'piso', render: { fillStyle: '#e6e6e6' } }); // bajado 10px
+  World.add(world, ground);
+      // Pared izquierda
+  const leftWallHeight = H - 470 - 90; // desde el techo hasta el piso-premio
+  const leftWallY = 90 + leftWallHeight / 2;
+  // Pared izquierda más ancha y un poco más a la izquierda
+  const leftWall = Bodies.rectangle(newCenter - newWidth/2 - 10, leftWallY, 28, leftWallHeight, { isStatic: true, label: 'pared-izquierda', render: { fillStyle: '#0f2248' } });
+  World.add(world, leftWall);
+      // Pared derecha
+  const rightWallHeight = H - 470 - 90;
+  const rightWallY = 90 + rightWallHeight / 2;
+  const rightWall = Bodies.rectangle(W - 96, rightWallY, 16, rightWallHeight, { isStatic: true, label: 'pared-derecha', render: { fillStyle: '#0f2248' } });
+  World.add(world, rightWall);
+      // Techo
+  const topWall = Bodies.rectangle(W/2, 60, 0.8 * (W - 60), 30, { isStatic: true, label: 'techo', render: { fillStyle: '#0f2248' } });
+  World.add(world, topWall);
+      // Rampa
+      const chuteWall = Bodies.rectangle(W - 150, H - 140, 20, 200, { isStatic: true, angle: -0.35, label: 'rampa', render:{ fillStyle:'#163b7a' } });
+      World.add(world, chuteWall);
+      // Sensor de premio
+  const goalSensor = Bodies.rectangle(W/2, H - 600, 90, 80, {
+        isStatic: true,
+        isSensor: true,
+        label: 'sensor-premio',
+        render: { strokeStyle: '#5af', fillStyle: 'rgba(90,150,255,.2)', lineWidth: 2 }
+      });
+      World.add(world, goalSensor);
+      // Detectar colisión con ragdoll y mostrar video (solo una vez)
+      let videoShown = false;
+      Events.on(engine, 'collisionStart', function(event) {
+        if (videoShown) return;
+        for (const pair of event.pairs) {
+          if ((pair.bodyA.label === 'sensor-premio' && pair.bodyB.plugin && pair.bodyB.plugin.isPlush) ||
+              (pair.bodyB.label === 'sensor-premio' && pair.bodyA.plugin && pair.bodyA.plugin.isPlush)) {
+            showYoutubeVideo();
+            videoShown = true;
+            break;
+          }
+        }
+      });
+      // Piso a la parte de abajo del sensor de premio (todo el ancho)
+  const goalFloor = Bodies.rectangle(W/2 + 5, H - 501, W - 180, 18, { isStatic: true, label: 'piso-premio', friction: 2.5, render: { fillStyle: '#e6e6e6' } }); // bajado 9px
+  World.add(world, goalFloor);
+      // Tabique
+  // Mover el extremo inferior del tabique un poco más abajo (sumar 20px a la posición Y)
+  // Mover el tabique 3 veces a la izquierda (cada vez 30px)
+  // Mover el tabique una vez a la derecha y un poco más arriba
+  const tabique = Bodies.rectangle(W - 360, 370, 30, 140, { isStatic: true, label: 'tabique', render: { fillStyle: '#2a3a5a' } });
+  World.add(world, tabique);
+      // Escalera (más chica y movida a la izquierda)
+      const stepCount = 6;
+  const stepWidth = 50, stepHeight = 12, stepGap = 12;
+  const startX = newCenter + newWidth/2 + 160; // escalera mucho más a la derecha
+  const startY = (H/2 - 200) + 140;
+      window.stepsEscalera = [];
+      for (let i = 0; i < stepCount; i++) {
+        const step = Bodies.rectangle(
+          startX - i * (stepWidth * 0.5),
+          startY + i * (stepHeight + stepGap),
+          stepWidth,
+          stepHeight,
+          {
+            isStatic: true,
+            angle: 0,
+            friction: 1.2,
+            frictionStatic: 1.5,
+            label: 'escalon-' + (i+1),
+            render: { fillStyle: '#bfc8e6' }
+          }
+        );
+        window.stepsEscalera.push(step);
+        World.add(world, step);
+      }
+      // Colores arcoíris y notas musicales
+      const rainbow = ['#ff0000','#ff9900','#ffee00','#33ff00','#00ffee','#0066ff','#9900ff'];
+      const notes = ['C4','D4','E4','F4','G4','A4','B4'];
+      function playNote(nota) {
+        try {
+          const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = 'sine';
+          o.frequency.value = {C4:261.63,D4:293.66,E4:329.63,F4:349.23,G4:392.00,A4:440.00,B4:493.88}[nota] || 440;
+          g.gain.value = 0.15;
+          o.connect(g); g.connect(ctx.destination);
+          o.start();
+          o.stop(ctx.currentTime+0.18);
+        } catch(e){}
+      }
+      Events.on(engine, 'collisionStart', (e) => {
+        for (const pair of e.pairs) {
+          const a = pair.bodyA, b = pair.bodyB;
+          // Detectar colisión ragdoll-escalón
+          for (let i = 0; i < window.stepsEscalera.length; i++) {
+            const step = window.stepsEscalera[i];
+            if ((a === step || b === step) && ((a.plugin && a.plugin.isPlush) || (b.plugin && b.plugin.isPlush))) {
+              step.render.fillStyle = rainbow[i % rainbow.length];
+              // Apagar el color después de 1 segundo
+              setTimeout(() => {
+                step.render.fillStyle = '#bfc8e6';
+              }, 1000);
+              playNote(notes[i % notes.length]);
+              // Sonido de impacto
+              try {
+                const ctx = window.audioCtx || (window.audioCtx = new(window.AudioContext||window.webkitAudioContext)());
+                const o = ctx.createOscillator();
+                const g = ctx.createGain();
+                o.type = 'triangle';
+                o.frequency.value = 220 + i*40;
+                g.gain.value = 0.22; // volumen más alto
+                o.connect(g); g.connect(ctx.destination);
+                o.start();
+                g.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.18);
+                o.frequency.linearRampToValueAtTime(80, ctx.currentTime + 0.18);
+                o.stop(ctx.currentTime + 0.2);
+              } catch(e){}
+            }
+          }
+        }
+      });
+
+      // Puntuación al entrar en el sensor
+      Events.on(engine, 'collisionStart', (e) => {
+        for (const pair of e.pairs) {
+          const a = pair.bodyA, b = pair.bodyB;
+          if (a.label === 'goal' || b.label === 'goal') {
+            const other = (a.label === 'goal') ? b : a;
+            if (other.plugin && other.plugin.isPlush && !isGrabbing(other) && !other.plugin.won) {
+              other.plugin.won = true;
+              other.plugin.isPlush = false;
+              score++;
+              updateHud();
+              if (other.render) other.render.fillStyle = '#ffd54a';
+              Body.setVelocity(other, { x: 2.0, y: 2.5 });
+            }
+          }
+        }
+      });
+    }
+
+    function buildClaw() {
+      chainGroup = Body.nextGroup(true);
+      // Carro
+      carriage = Bodies.rectangle(W/2, RAIL_Y, 54, 16, {
+        chamfer: 2,
+        frictionAir: 0.04,
+        friction: 0.05,
+        collisionFilter: { group: chainGroup },
+        label: 'carro',
+        render: { fillStyle: '#99b7ff' }
+      });
+      // Garra principal
+      const clawMain = Bodies.circle(W/2, RAIL_Y + 140 + 18, CLAW_RADIUS, {
+        density: 0.004,
+        restitution: 0.1,
+        friction: 2.0,
+        frictionStatic: 2.0,
+        frictionAir: 0.09,
+        collisionFilter: { group: chainGroup },
+        label: 'garra-cuerpo',
+        render: { fillStyle: '#fff' }
+      });
+      Body.setInertia(clawMain, Infinity); // Bloquear rotación
+      // Media esfera inferior
+      const clawBottom = Bodies.circle(W/2, RAIL_Y + 140 + CLAW_RADIUS * 0.85, CLAW_RADIUS * 0.85, {
+        density: 0.04,
+        restitution: 0.1,
+        friction: 2.0,
+        frictionStatic: 2.0,
+        frictionAir: 0.09,
+        collisionFilter: { group: chainGroup },
+        label: 'garra-base',
+        render: { fillStyle: '#fff' }
+      });
+      claw = Body.create({
+        parts: [clawMain, clawBottom],
+        collisionFilter: { group: chainGroup },
+        label: 'garra',
+        render: { fillStyle: '#fff' }
+      });
+      World.add(world, [carriage, claw]);
+      createChain(CHAIN_INIT_LINKS);
+      createFingers();
+    }
+
+    // Cadena compuesta de eslabones con constraints
+    function createChain(n) {
+      // Limpia cadena previa si existe
+      if (chain.links.length) {
+        if (chain.clawConstraint) { World.remove(world, chain.clawConstraint); chain.clawConstraint = null; }
+        if (chain.carriageConstraint) { World.remove(world, chain.carriageConstraint); chain.carriageConstraint = null; }
+        for (const c of chain.constraints) World.remove(world, c);
+        for (const l of chain.links) World.remove(world, l);
+        chain = { links: [], constraints: [], carriageConstraint: null, clawConstraint: null };
+      }
+
+      const x = carriage.position.x;
+  // Limitar el descenso inicial de la cadena para que el carro esté aún más pegado al riel
+  const startY = RAIL_Y + 2; // antes 12, ahora mucho más cerca del riel
+      for (let i = 0; i < n; i++) {
+        const link = Bodies.circle(x, startY + i * (LINK_R*2 + LINK_SPACING), LINK_R, {
+          chamfer: 2,
+          frictionAir: 0.02,
+          friction: 0.2,
+          density: 0.0015,
+          collisionFilter: { group: chainGroup },
+          label: 'eslabon-' + (i+1),
+          render: { fillStyle: '#fff' }
+        });
+        chain.links.push(link);
+      }
+      World.add(world, chain.links);
+
+      // Conectar eslabones contiguos
+      for (let i = 1; i < chain.links.length; i++) {
+        const prev = chain.links[i - 1], curr = chain.links[i];
+        const con = Constraint.create({
+          bodyA: prev,
+          bodyB: curr,
+          length: (LINK_R*2 + LINK_SPACING),
+          stiffness: 0.9,
+          damping: 0.08,
+          render: { visible: false } // constraints invisibles
+        });
+        chain.constraints.push(con);
+      }
+
+      // Unir al carro (parte superior)
+      chain.carriageConstraint = Constraint.create({
+        bodyA: carriage,
+        pointA: { x: 0, y: 9 },
+        bodyB: chain.links[0],
+        pointB: { x: 0, y: 0 },
+        length: (LINK_R + 2),
+        stiffness: 0.9,
+        damping: 0.2,
+        render: { visible: false }
+      });
+
+      World.add(world, chain.constraints.concat(chain.carriageConstraint));
+
+      // Posicionar garra al final y conectar
+      const last = chain.links[chain.links.length - 1];
+      Body.setPosition(claw, { x: last.position.x, y: last.position.y + LINK_R + CLAW_RADIUS + 2 });
+      chain.clawConstraint = Constraint.create({
+        bodyA: last,
+        pointA: { x: 0, y: 0 },
+        bodyB: claw,
+        length: (LINK_R + CLAW_RADIUS + 2),
+        stiffness: 0.9,
+        damping: 0.2,
+        render: { visible: false }
+      });
+      World.add(world, chain.clawConstraint);
+    }
+    function createFingers() {
+      // Elimina dedos y pivotes previos si existen
+      if (leftFinger) { try { World.remove(world, leftFinger); } catch(e){} leftFinger = null; }
+      if (rightFinger) { try { World.remove(world, rightFinger); } catch(e){} rightFinger = null; }
+      if (fingerPivotL) { try { World.remove(world, fingerPivotL); } catch(e){} fingerPivotL = null; }
+      if (fingerPivotR) { try { World.remove(world, fingerPivotR); } catch(e){} fingerPivotR = null; }
+
+      const cx = claw.position.x, cy = claw.position.y;
+      const pivotYOffset = -FINGER_LEN/2 + 6;
+      const yF = cy + CLAW_RADIUS * 0.7;
+      const toeYOffset = FINGER_LEN/2 - Math.max(6, FINGER_TOE_THICK/2 + 2);
+      // Ángulos iniciales
+      leftTarget = armsClosed ? Math.PI/4 : Math.PI/10;
+      rightTarget = armsClosed ? -Math.PI/4 : -Math.PI/10;
+
+      // Dedo izquierdo
+      leftFinger = Body.create({
+        parts: [
+          Bodies.rectangle(cx - CLAW_RADIUS * 0.9, yF, FINGER_W, FINGER_LEN, {
+            chamfer: 3, friction: 2.0, frictionStatic: 2.0, restitution: 0.02,
+            density: 0.006,
+            collisionFilter: { group: chainGroup }, label: 'dedo-izquierdo', render: { fillStyle: '#fff' }
+          }),
+          Bodies.rectangle(
+            cx - CLAW_RADIUS * 0.9 + (FINGER_W/2) + (FINGER_TOE_LEN/2),
+            yF + toeYOffset,
+            FINGER_TOE_LEN, FINGER_TOE_THICK,
+            { chamfer: 2, friction: 2.0, frictionStatic: 2.0, density: 0.018, collisionFilter: { group: chainGroup }, label: 'dedo-izquierdo-extremo', render: { fillStyle: '#fff' } }
+          )
+        ],
+        collisionFilter: { group: chainGroup },
+        label: 'dedo-izquierdo-compuesto'
+      });
+      Body.setAngle(leftFinger, leftTarget);
+
+      // Dedo derecho
+      rightFinger = Body.create({
+        parts: [
+          Bodies.rectangle(cx + CLAW_RADIUS * 0.9, yF, FINGER_W, FINGER_LEN, {
+            chamfer: 3, friction: 2.0, frictionStatic: 2.0, restitution: 0.02,
+            density: 0.006,
+            collisionFilter: { group: chainGroup }, label: 'dedo-derecho', render: { fillStyle: '#fff' }
+          }),
+          Bodies.rectangle(
+            cx + CLAW_RADIUS * 0.9 - (FINGER_W/2) - (FINGER_TOE_LEN/2),
+            yF + toeYOffset,
+            FINGER_TOE_LEN, FINGER_TOE_THICK,
+            { chamfer: 2, friction: 2.0, frictionStatic: 2.0, density: 0.018, collisionFilter: { group: chainGroup }, label: 'dedo-derecho-extremo', render: { fillStyle: '#fff' } }
+          )
+        ],
+        collisionFilter: { group: chainGroup },
+        label: 'dedo-derecho-compuesto'
+      });
+      Body.setAngle(rightFinger, rightTarget);
+
+      World.add(world, [leftFinger, rightFinger]);
+      leftFinger.frictionAir = 0.12;
+      rightFinger.frictionAir = 0.12;
+
+      // Pivotes (revolute)
+      fingerPivotL = Constraint.create({
+        bodyA: claw,
+        pointA: { x: -CLAW_RADIUS * 0.7, y: CLAW_RADIUS * 0.25 },
+        bodyB: leftFinger,
+        pointB: { x: 0, y: pivotYOffset },
+        length: 0,
+        stiffness: 1,
+        render: { strokeStyle: '#7ea6ff', lineWidth: 2 }
+      });
+      fingerPivotR = Constraint.create({
+        bodyA: claw,
+        pointA: { x:  CLAW_RADIUS * 0.7, y: CLAW_RADIUS * 0.25 },
+        bodyB: rightFinger,
+        pointB: { x: 0, y: pivotYOffset },
+        length: 0,
+        stiffness: 1,
+        render: { strokeStyle: '#7ea6ff', lineWidth: 2 }
+      });
+      World.add(world, [fingerPivotL, fingerPivotR]);
+    }
+
+    function addLink() {
+      if (chain.links.length >= CHAIN_MAX_LINKS) return;
+      const last = chain.links[chain.links.length - 1];
+      const pos = { x: last.position.x, y: last.position.y + (LINK_R*2 + LINK_SPACING) };
+      const link = Bodies.circle(pos.x, pos.y, LINK_R, {
+        chamfer: 2,
+        frictionAir: 0.02,
+        friction: 0.2,
+        density: 0.0015,
+        collisionFilter: { group: chainGroup },
+        label: 'eslabon-' + (chain.links.length + 1),
+        render: { fillStyle: '#fff' } // cadena blanca
+      });
+      World.add(world, link);
+      chain.links.push(link);
+
+      if (chain.clawConstraint) { World.remove(world, chain.clawConstraint); chain.clawConstraint = null; }
+
+      const con = Constraint.create({
+        bodyA: last,
+        bodyB: link,
+        length: (LINK_R*2 + LINK_SPACING),
+        stiffness: 0.9,
+          damping: 0.08,
+        render: { visible: false } // constraints invisibles
+      });
+      chain.constraints.push(con);
+      World.add(world, con);
+
+      chain.clawConstraint = Constraint.create({
+        bodyA: link,
+        pointA: { x: 0, y: 0 },
+        bodyB: claw,
+        length: (LINK_R + CLAW_RADIUS + 2),
+        stiffness: 0.9,
+          damping: 0.08,
+        render: { visible: false }
+      });
+      World.add(world, chain.clawConstraint);
+    }
+
+    function removeLink() {
+      if (chain.links.length <= CHAIN_MIN_LINKS) return;
+      const last = chain.links.pop();
+      if (chain.clawConstraint) { World.remove(world, chain.clawConstraint); chain.clawConstraint = null; }
+      const con = chain.constraints.pop();
+      if (con) World.remove(world, con);
+      const newLast = chain.links[chain.links.length - 1];
+      chain.clawConstraint = Constraint.create({
+        bodyA: newLast,
+        pointA: { x: 0, y: 0 },
+        bodyB: claw,
+        length: (LINK_R + CLAW_RADIUS + 2),
+        stiffness: 0.9,
+          damping: 0.08,
+        render: { visible: false }
+      });
+      World.add(world, chain.clawConstraint);
+      World.remove(world, last);
+    }
+
+    function spawnPlushes() {
+      // No crear peluches al iniciar
+      plushes = [];
+      updateHud();
+    }
+
+    // --- RAGDOLL UTILIDAD ---
+function createMiniRagdoll(x, y, scale = 0.45) {
+  // Paleta de colores fuertes y raros
+  const palette = [
+    '#ff0055', '#00ffd0', '#fffb00', '#ff00ff', '#00ff2a', '#ff7f00', '#00aaff', '#a020f0', '#ff2222', '#00ff99', '#ff8800', '#00fffa', '#ff00a2', '#aaff00', '#ff0099', '#00ff44', '#ff6600', '#00bfff', '#ff00c8', '#00ffb2'
+  ];
+  const baseColor = palette[Math.floor(Math.random()*palette.length)];
+  function rc() { return baseColor; }
+  // Basado en Example.ragdoll.ragdoll adaptado a Matter.js global
+  const Body = Matter.Body, Bodies = Matter.Bodies, Constraint = Matter.Constraint, Composite = Matter.Composite;
+  const head = Bodies.rectangle(x, y - 60*scale, 34*scale, 40*scale, { chamfer: { radius: 15*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  head.plugin = { isPlush: true };
+  const chest = Bodies.rectangle(x, y, 55*scale, 80*scale, { chamfer: { radius: 20*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  chest.plugin = { isPlush: true };
+  const rightUpperArm = Bodies.rectangle(x + 39*scale, y - 15*scale, 20*scale, 40*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  rightUpperArm.plugin = { isPlush: true };
+  const rightLowerArm = Bodies.rectangle(x + 39*scale, y + 25*scale, 20*scale, 60*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  rightLowerArm.plugin = { isPlush: true };
+  const leftUpperArm = Bodies.rectangle(x - 39*scale, y - 15*scale, 20*scale, 40*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  leftUpperArm.plugin = { isPlush: true };
+  const leftLowerArm = Bodies.rectangle(x - 39*scale, y + 25*scale, 20*scale, 60*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  leftLowerArm.plugin = { isPlush: true };
+  const leftUpperLeg = Bodies.rectangle(x - 20*scale, y + 57*scale, 20*scale, 40*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  leftUpperLeg.plugin = { isPlush: true };
+  const leftLowerLeg = Bodies.rectangle(x - 20*scale, y + 97*scale, 20*scale, 60*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  leftLowerLeg.plugin = { isPlush: true };
+  const rightUpperLeg = Bodies.rectangle(x + 20*scale, y + 57*scale, 20*scale, 40*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  rightUpperLeg.plugin = { isPlush: true };
+  const rightLowerLeg = Bodies.rectangle(x + 20*scale, y + 97*scale, 20*scale, 60*scale, { chamfer: { radius: 10*scale }, render: { fillStyle: rc() }, density: 0.001 });
+  rightLowerLeg.plugin = { isPlush: true };
+  // Constraints invisibles
+  const constraints = [
+    Constraint.create({ bodyA: chest, pointA: {x:24*scale,y:-23*scale}, bodyB: rightUpperArm, pointB: {x:0,y:-8*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: chest, pointA: {x:-24*scale,y:-23*scale}, bodyB: leftUpperArm, pointB: {x:0,y:-8*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: chest, pointA: {x:-10*scale,y:30*scale}, bodyB: leftUpperLeg, pointB: {x:0,y:-10*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: chest, pointA: {x:10*scale,y:30*scale}, bodyB: rightUpperLeg, pointB: {x:0,y:-10*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: rightUpperArm, pointA: {x:0,y:15*scale}, bodyB: rightLowerArm, pointB: {x:0,y:-25*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: leftUpperArm, pointA: {x:0,y:15*scale}, bodyB: leftLowerArm, pointB: {x:0,y:-25*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: leftUpperLeg, pointA: {x:0,y:20*scale}, bodyB: leftLowerLeg, pointB: {x:0,y:-20*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: rightUpperLeg, pointA: {x:0,y:20*scale}, bodyB: rightLowerLeg, pointB: {x:0,y:-20*scale}, stiffness:0.95, render: { visible: false } }),
+    Constraint.create({ bodyA: head, pointA: {x:0,y:25*scale}, bodyB: chest, pointB: {x:0,y:-35*scale}, stiffness:0.95, render: { visible: false } })
+  ];
+  const ragdoll = Composite.create({
+    bodies: [chest, head, leftLowerArm, leftUpperArm, rightLowerArm, rightUpperArm, leftLowerLeg, rightLowerLeg, leftUpperLeg, rightUpperLeg],
+    constraints: constraints
+  });
+  return ragdoll;
+}
+
+
+    function randomPlushie(x, y) {
+      // Solo ragdoll
+      return createMiniRagdoll(x, y, 0.45);
+    }
+
+    function randomColor() {
+      const palette = ['#f7c59f','#fbeee6','#b5ead7','#ffb7b2','#b2cefe','#f7a072','#f6eac2','#e2f0cb','#b5ead7','#f7d6e0'];
+      return palette[Math.floor(Math.random()*palette.length)];
+    }
+
+    function addMouse() {
+      const mouse = Mouse.create(render.canvas);
+      const mouseConstraint = MouseConstraint.create(engine, {
+        mouse,
+        constraint: { stiffness: 0.02, render: { visible: false } }
+      });
+      World.add(world, mouseConstraint);
+      render.mouse = mouse;
+    }
+
+    function addWheel() {
+      const canvas = render.canvas;
+      canvas.addEventListener('wheel', onWheel, { passive: false });
+    }
+
+    function onWheel(e) {
+      e.preventDefault();
+      const STEP = 80; // píxeles de delta por eslabón
+      wheelAcc += e.deltaY;
+      while (wheelAcc >= STEP) { addLink(); wheelAcc -= STEP; }
+      while (wheelAcc <= -STEP) { removeLink(); wheelAcc += STEP; }
+    }
+
+    function addHud() {
+      document.getElementById('score').textContent = String(score);
+      document.getElementById('left').textContent  = String(plushes.filter(p => p && p.plugin && p.plugin.isPlush).length);
+    }
+
+    function updateHud() {
+      document.getElementById('score').textContent = String(score);
+      document.getElementById('left').textContent  = String(plushes.filter(p => p && p.plugin && p.plugin.isPlush).length);
+    }
+
+    // Joystick 3D
+    window.joystickState = { x: 0, y: 0 };
+    window.onJoystick3DMove = function(dx, dy) {
+      window.joystickState.x = Math.max(-1, Math.min(1, dx));
+      window.joystickState.y = Math.max(-1, Math.min(1, dy));
+    };
+    window.addEventListener('DOMContentLoaded', function() {
+      // Simple fallback for createJoystick3D
+      if (typeof createJoystick3D === 'undefined') {
+        window.createJoystick3D = function(containerId) {
+          console.log('Joystick3D fallback loaded');
+          // Hide the joystick container since we're using button controls
+          const container = document.getElementById(containerId);
+          if (container) container.style.display = 'none';
+        };
+      }
+      createJoystick3D('joystick3d-container');
+    });
+
+// En drawOverlay, dibujar solo overlay y nombres
+function drawOverlay() {
+  const ctx = render.context;
+  ctx.save();
+  ctx.fillStyle = '#9fb7ff';
+  ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('RIEL', W/2, RAIL_Y - 24);
+  ctx.strokeStyle = 'rgba(255,255,255,.18)';
+  ctx.beginPath();
+  ctx.arc(claw.position.x, claw.position.y, GRAB_RADIUS, 0, Math.PI*2);
+  ctx.stroke();
+}
+
+    function tick() {
+      // Mantener carro a la altura del riel
+      Body.setPosition(carriage, { x: clamp(carriage.position.x, 150, W - 70), y: RAIL_Y });
+      Body.setVelocity(carriage, { x: clamp(carriage.velocity.x, -6, 6), y: 0 });
+
+      // Entrada: movimiento horizontal
+      let moving = false;
+      if (keys.left && !keys.right) {
+        Body.setVelocity(carriage, { x: carriage.velocity.x - CARRIAGE_SPEED, y: 0 });
+        moving = true;
+      }
+      if (keys.right && !keys.left) {
+        Body.setVelocity(carriage, { x: carriage.velocity.x + CARRIAGE_SPEED, y: 0 });
+        moving = true;
+      }
+      // También detecta movimiento por joystick
+      if (window.joystickState && Math.abs(window.joystickState.x) > 0.05) {
+        moving = true;
+      }
+      // Sonido motorcito
+      if (moving) {
+        startMotorSound();
+      } else {
+        stopMotorSound();
+      }
+
+      // Animación suave de cierre/apertura de brazos
+      if (leftFinger && rightFinger) {
+        Body.setAngle(leftFinger, leftFinger.angle + (leftTarget - leftFinger.angle) * FINGER_SPEED);
+        Body.setAngularVelocity(leftFinger, 0);
+        Body.setAngle(rightFinger, rightFinger.angle + (rightTarget - rightFinger.angle) * FINGER_SPEED);
+        Body.setAngularVelocity(rightFinger, 0);
+      }
+
+      // Joystick
+      if (window.joystickState) {
+        if (Math.abs(window.joystickState.x) > 0.05) {
+          Body.setVelocity(carriage, { x: window.joystickState.x * 7, y: 0 });
+        }
+        if (Math.abs(window.joystickState.y) > 0.6) { // aún menos sensible vertical
+          if (window.joystickState.y < 0) removeLink();
+          if (window.joystickState.y > 0) addLink();
+        }
+      }
+
+      // Limitar giro de las piezas para que se muevan menos
+      limitAngular(claw, 0.4);
+      limitAngular(leftFinger, 0.6);
+      limitAngular(rightFinger, 0.6);
+    }
+
+    function isGrabbing(body) {
+      return grabConstraint && grabConstraint.bodyB === body;
+    }
+
+    function toggleArms() {
+      armsClosed = !armsClosed;
+      leftTarget = armsClosed ? Math.PI/4 : Math.PI/10;
+      rightTarget = armsClosed ? -Math.PI/4 : -Math.PI/10;
+    }
+
+    function toggleGrab() {
+      if (!canToggleGrab) return;
+      canToggleGrab = false; setTimeout(() => canToggleGrab = true, 180);
+      if (grabConstraint) { releaseGrab(); return; }
+
+      let nearest = null, bestDist = Infinity;
+      for (const p of plushes) {
+        if (!p) continue;
+        const d = Vector.magnitude(Vector.sub(p.position, claw.position));
+        if (d < GRAB_RADIUS * 1.25 && d < bestDist) { bestDist = d; nearest = p; }
+      }
+      if (nearest) {
+        grabConstraint = Constraint.create({
+          bodyA: claw,
+          bodyB: nearest,
+          length: Math.max(6, bestDist * 0.45),
+          stiffness: 1.0, // mucho más rígido
+          damping: 0.2,
+          render: { strokeStyle: '#fff', lineWidth: 2 }
+        });
+        World.add(world, grabConstraint);
+      }
+    }
+
+    function releaseGrab() {
+      if (!grabConstraint) return;
+      World.remove(world, grabConstraint);
+      grabConstraint = null;
+    }
+
+    function resetGame() {
+      World.clear(world, false);
+      Engine.clear(engine);
+      score = 0; plushes = []; grabConstraint = null; keys = { left:false, right:false }; wheelAcc = 0;
+
+      buildArena();
+      buildClaw();
+      //spawnPlushes();
+      addMouse();
+      addWheel();
+      addHud();
+    }
+
+    function onKey(e) {
+      const down = e.type === 'keydown';
+      switch (e.code) {
+        case 'ArrowLeft': case 'KeyA': keys.left = down; break;
+        case 'ArrowRight': case 'KeyD': keys.right = down; break;
+        case 'ArrowUp': case 'KeyW': if (down) removeLink(); break;
+        case 'ArrowDown': case 'KeyS': if (down) addLink(); break;
+        case 'Space': if (down) toggleArms(); break;
+        case 'KeyR': if (down) resetGame(); break;
+      }
+    }
+
+    window.addEventListener('keydown', function(e) {
+  if (e.code === 'Space') {
+    e.preventDefault();
+  }
+}, { capture: true });
+
+    function limitAngular(body, max) {
+      if (!body) return;
+      const av = body.angularVelocity || 0;
+      if (av >  max) Body.setAngularVelocity(body,  max);
+      if (av < -max) Body.setAngularVelocity(body, -max);
+    }
+
+    // --- Utilidades
+    function randomPastel() {
+      const h = Math.floor(Math.random()*360);
+      return `hsl(${h} 80% 75%)`;
+    }
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+    function safeRemove(b) {
+      try { World.remove(world, b); } catch(_) {}
+      const idx = plushes.indexOf(b); if (idx >= 0) plushes[idx] = null;
+    }
+
+  })();
+  </script>
+  <!-- Video flotante dentro de la simulación -->
+  <style>
+#video-simulacion {
+  position: absolute;
+  left: 54%; /* más a la izquierda */
+  top: 1120px; /* más abajo */
+  transform: translateX(-50%);
+  z-index: 20;
+  box-shadow: 0 4px 32px #0006;
+  border-radius: 16px;
+}
+#stage { position: relative; }
+</style>
+<div id="video-simulacion">
+</div>
+</body>
+</html>

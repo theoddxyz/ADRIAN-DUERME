@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Juego</title>
+  <style>
+    :root{ --bg:#189d3a; --ball:#ffffff; }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg)}
+    .stage{display:flex;justify-content:center;align-items:center;height:100%}
+    canvas{width:min(100vw,1000px);aspect-ratio:16/9;height:auto;border-radius:12px;image-rendering:pixelated}
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <canvas id="game"></canvas>
+  </div>
+
+<script>
+'use strict';
+
+// ===== Config =====
+const SPEED = 200;        // px/s
+const PLAYER_R = 14;      // px
+const JUMP_V0 = 520;      // px/s (más impulso para salto más largo)
+const GRAVITY = 1100;     // px/s^2 (gravedad menor para más hang time)
+const DIST_MAX = 2400;    // px totales antes de agotar energía
+const TURN_PENALTY = 160;  // px de energía que se pierden al doblar
+// Terrenos
+const LAKES = 3;                // cantidad de lagos
+const LAKE_R_MIN = 36, LAKE_R_MAX = 64;
+const SANDS = 4;                // cantidad de bancos de arena
+const SAND_R_MIN = 40, SAND_R_MAX = 90;
+const SAND_SLOW = 0.55;         // multiplicador de velocidad en arena
+const SAND_DRAIN = 3.0;         // multiplicador de llenado en arena (más rápido) // por qué: barra debe crecer MÁS rápido en arena
+const LAKE_EDGE_SCALE = 1.0;    // colisionar con lagos solo si tocás más adentro del borde
+// Barra inferior dedicada (debajo del mapa)
+const BAR_H = 14, BAR_PAD = 8; // altura real y padding vertical
+const PANEL_H = BAR_H + BAR_PAD*2; // alto del panel bajo el mapa
+// Carrito de golf
+const CART_MIN_INTERVAL = 5, CART_MAX_INTERVAL = 12; // s entre apariciones
+const CART_SPEED = 240; // px/s
+const CART_W = 64, CART_H = 28; // tamaño del carrito
+
+// ===== Títulos por nivel (1..100) =====
+const LEVEL_TITLES = [
+  '',
+  'Cadete','Pasante','Asistente','Auxiliar','Administrativo','Junior','Ejecutivo/a de Cuentas','Community Manager','Analista','Coordinador/a',
+  'Jefe/a de Tráfico','Supervisor/a','Responsable de Área','Project Manager','Jefe/a de Producto','Brand Manager','Gerente','Gerente Senior','Director/a','Director/a Regional',
+  'Country Manager','VP Asociado','Vicepresidente','SVP (Senior Vice President)','CMO','CFO','CTO','COO','CEO',
+  'Presidente de la Empresa','Chairman del PowerPoint','Barón del Excel','Dueño de la Agenda','Maestro de Presentaciones','Señor de los KPI','Político de Pasillo','Magnate del Networking','Tiburón de la Bolsa','Filántropo de Eventos',
+  'Triunfador en LinkedIn','Coleccionista de Tarjetas','Emperador del After Office','Ganador de Bonos','Dueño de Dos Calendarios','Jubilado con Stock Options','Alma en Burnout','Buscador de Sentido','Renunciante Ilustre','Viajero con One-Way',
+  'Umbral (Crisis Productiva)','Estudiante de Respiración','Aprendiz de Silencio','Observador de Pájaros','Jardinero de Balcón','Caminante de la Costanera','Librero de Viejos','Sommelier de Mate','Meditador de Semáforo','Poeta de Ticket de Caja',
+  'Curador de Pequeñas Cosas','Albañil de Hábitos','Artista Dominguero','Cartógrafo de Sueños','Amigo de los Perros','Escuchador Profesional','Nigredo','Albedo','Rubedo','Epifanía de Lluvia',
+  'Monje Urbano','Peregrino del Subte','Maestro de Quietud','Tejedor de Redes Humanas','Guardián de Puentes','Cartógrafo de Posibilidades','Arquitecto del Vacío','Chamán del Wi-Fi','Custodio del Juego','Compositor de Silencios',
+  'Jardinero de Ciudades','Cronista del Presente','Navegante de Umbrales','Habitante del Entre','Testigo Luminoso','Conciencia en Movimiento','Risa que Comprende','Ojo que Abraza','Corazón Sin Fronteras','Presencia Plena',
+  'Unidad con Todo','Brizna y Universo','Atemporal','Innombrable','Vacío Fértil','Luz Detrás de la Luz','Soplo','Silencio','Fuente','Todo y Nada',
+  'Dios'
+];
+function rankFor(lv){ if(lv>=100) return LEVEL_TITLES[100]||LEVEL_TITLES[LEVEL_TITLES.length-1]; if(lv<1) return LEVEL_TITLES[1]; return LEVEL_TITLES[lv] || LEVEL_TITLES[LEVEL_TITLES.length-1]; }
+
+
+// ===== Setup =====
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  const cssW = Math.max(320, canvas.clientWidth || 960);
+  const cssH = Math.max(180, Math.round(cssW * 9/16));
+  canvas.style.height = cssH + 'px';
+  const targetW = Math.floor(cssW * dpr);
+  const targetH = Math.floor(cssH * dpr);
+  if(canvas.width !== targetW || canvas.height !== targetH){
+    canvas.width = targetW; canvas.height = targetH;
+  }
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', () => { resize(); refreshWorldSize(); });
+
+let worldW = 960, worldH = 540; let playH = 540 - PANEL_H;
+let needsTickReset = false; // evitar TDZ y permitir reset seguro
+function refreshWorldSize(){
+  worldW = canvas.clientWidth || 960;
+  worldH = canvas.clientHeight || 540;
+  playH = Math.max(180, worldH - PANEL_H); // área jugable (arriba); panel abajo
+}
+
+// ===== Terreno: utilidades =====
+function seededRNG(s){ let x = s>>>0 || 123456789; return ()=> (x = (x^=x<<13, x^=x>>>17, x^=x<<5)>>>0) / 0x100000000; }
+let levelSeed = (Math.random()*0xFFFFFFFF)>>>0; // semilla del nivel actual
+let rng = seededRNG(levelSeed);
+let grassPattern = null;
+function makeGrassPattern(){
+  const off = document.createElement('canvas'); off.width = 64; off.height = 64;
+  const g = off.getContext('2d');
+  g.fillStyle = '#189d3a'; g.fillRect(0,0,64,64);
+  g.fillStyle = 'rgba(0,0,0,0.06)';
+  for(let i=0;i<120;i++){ const x=Math.random()*64, y=Math.random()*64, r=Math.random()*2+0.5; g.beginPath(); g.arc(x,y,r,0,Math.PI*2); g.fill(); }
+  g.fillStyle = 'rgba(255,255,255,0.035)';
+  for(let i=0;i<80;i++){ const x=Math.random()*64, y=Math.random()*64, r=Math.random()*1.5+0.5; g.beginPath(); g.arc(x,y,r,0,Math.PI*2); g.fill(); }
+  g.strokeStyle = 'rgba(255,255,255,0.04)'; g.lineWidth = 1;
+  for(let i=0;i<24;i++){ const x=Math.random()*64, y=Math.random()*64, len=Math.random()*6+4, ang=Math.random()*Math.PI*2; g.beginPath(); g.moveTo(x,y); g.lineTo(x+Math.cos(ang)*len, y+Math.sin(ang)*len); g.stroke(); }
+  return ctx.createPattern(off, 'repeat');
+}
+
+// Polígonos orgánicos (blobs)
+function makeBlob(cx, cy, baseR, irregular=0.25, steps=48) {
+  const k1 = 1 + Math.floor(rng()*3); // 1..3
+  const k2 = 3 + Math.floor(rng()*3); // 3..5
+  const p1 = rng()*Math.PI*2, p2 = rng()*Math.PI*2;
+  const pts = [];
+  for (let i=0;i<steps;i++){
+    const th = i/steps * Math.PI*2;
+    const n = Math.sin(k1*th+p1)*0.6 + Math.sin(k2*th+p2)*0.4;
+    const r = baseR * (1 + irregular * n);
+    pts.push({x: cx + Math.cos(th)*r, y: cy + Math.sin(th)*r});
+  }
+  return finalizePoly(pts);
+}
+function finalizePoly(pts){
+  let cx=0, cy=0; for(const p of pts){ cx+=p.x; cy+=p.y; } cx/=pts.length; cy/=pts.length;
+  let r=0, minx=Infinity,miny=Infinity,maxx=-Infinity,maxy=-Infinity;
+  for(const p of pts){
+    const d = Math.hypot(p.x-cx,p.y-cy); r+=d;
+    if(p.x<minx)minx=p.x; if(p.x>maxx)maxx=p.x; if(p.y<miny)miny=p.y; if(p.y>maxy)maxy=p.y;
+  }
+  r/=pts.length;
+  return {poly:pts, cx, cy, r, bbox:{minx,miny,maxx,maxy}};
+}
+// Lago con forma de gota (más suave y estirado)
+function smoothPolygon(pts, iters=2, alpha=0.35){
+  let out = pts.slice();
+  const n = out.length;
+  for(let it=0; it<iters; it++){
+    const next = new Array(n);
+    for(let i=0;i<n;i++){
+      const p = out[i], p0 = out[(i-1+n)%n], p1 = out[(i+1)%n];
+      next[i] = {
+        x: p.x*(1-alpha) + (p0.x + p1.x)*0.5*alpha,
+        y: p.y*(1-alpha) + (p0.y + p1.y)*0.5*alpha,
+      };
+    }
+    out = next;
+  }
+  return out;
+}
+function makeLakeBlob(cx, cy, baseR){
+  const steps = 64;           // menos puntas
+  const irregular = 0.12;     // menos ruido
+  const elong = 0.25;         // estirado sutil
+  const tip = 0.18;           // sesgo de gota
+  const phi = rng()*Math.PI*2; // orientación aleatoria
+  const k1 = 1 + Math.floor(rng()*2); // 1..2
+  const k2 = 2 + Math.floor(rng()*2); // 2..3
+  const p1 = rng()*Math.PI*2, p2 = rng()*Math.PI*2;
+  const pts = [];
+  for(let i=0;i<steps;i++){
+    const th = i/steps * Math.PI*2;
+    let r = baseR;
+    const n = Math.sin(k1*th+p1)*0.35 + Math.sin(k2*th+p2)*0.25;
+    r *= (1 + irregular*n);
+    // elongación (elipse) a lo largo de phi
+    r *= (1 + elong * Math.cos(2*(th - phi)));
+    // forma de gota: estira hacia +phi y suaviza atrás
+    const c = Math.cos(th - phi);
+    if(c>0){ r *= (1 + tip*c); } else { r *= (1 + tip*0.2*c); }
+    pts.push({ x: cx + Math.cos(th)*r, y: cy + Math.sin(th)*r });
+  }
+  const smooth = smoothPolygon(pts, 2, 0.4);
+  return finalizePoly(smooth);
+}
+
+function pointInPoly(poly, x, y){
+  let inside=false;
+  for (let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
+    const intersect = ((yi>y)!=(yj>y)) && (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+
+
+function distToSegment(px,py,x1,y1,x2,y2){
+  const vx=x2-x1, vy=y2-y1; const wx=px-x1, wy=py-y1;
+  const c1 = vx*wx + vy*wy; if(c1<=0) return Math.hypot(px-x1, py-y1);
+  const c2 = vx*vx + vy*vy; if(c2<=c1) return Math.hypot(px-x2, py-y2);
+  const t = c1 / c2; const projx = x1 + t*vx, projy = y1 + t*vy; return Math.hypot(px-projx, py-projy);
+}
+function circleTouchesPoly(list, x, y, r){
+  for(const s of list){
+    const b=s.bbox; if(x<b.minx-r||x>b.maxx+r||y<b.miny-r||y>b.maxy+r) continue;
+    if(pointInPoly(s.poly, x, y)) return true;
+    for(let i=0,j=s.poly.length-1;i<s.poly.length;j=i++){
+      const a=s.poly[j], bpt=s.poly[i];
+      if(distToSegment(x,y,a.x,a.y,bpt.x,bpt.y) <= r) return true;
+    }
+  }
+  return false;
+}
+function drawBlobFill(s, colorStops){
+  const grd = ctx.createRadialGradient(s.cx, s.cy, s.r*0.1, s.cx, s.cy, s.r);
+  for(const cs of colorStops) grd.addColorStop(cs.pos, cs.color);
+  ctx.beginPath(); ctx.moveTo(s.poly[0].x, s.poly[0].y);
+  for(let i=1;i<s.poly.length;i++) ctx.lineTo(s.poly[i].x, s.poly[i].y);
+  ctx.closePath(); ctx.fillStyle = grd; ctx.fill();
+}
+
+
+// ===== Diseño de nivel =====
+function designLevel(){
+  const W = worldW, H = playH;
+  const avoidCenters = [ {x:player.x,y:player.y,r:120}, {x:hole.x,y:hole.y,r:hole.r+40} ];
+  function place(count, rmin, rmax, avoidList, gap){
+    const seeds=[]; let attempts=0;
+    while(seeds.length<count && attempts<count*300){ attempts++;
+      const r = rmin + rng()*(rmax - rmin);
+      const x = r+20 + rng()*(W - 2*(r+20));
+      const y = r+20 + rng()*(H - 2*(r+20));
+      const cand = {x,y,r};
+      let bad=false;
+      for(const a of avoidList){ const dx=x-a.x, dy=y-a.y; if(Math.hypot(dx,dy) < (r + (a.r||60) + gap)) { bad=true; break; } }
+      if(!bad){ for(const s of seeds){ const dx=x-s.x, dy=y-s.y; if(Math.hypot(dx,dy) < (r + s.r + gap)) { bad=true; break; } } }
+      if(!bad) seeds.push(cand);
+    }
+    return seeds;
+  }
+  const lakeSeeds = place(LAKES, LAKE_R_MIN, LAKE_R_MAX, avoidCenters, 24);
+  const sandSeeds = place(SANDS, SAND_R_MIN, SAND_R_MAX, avoidCenters.concat(lakeSeeds), 16);
+  lakes = lakeSeeds.map(s=> makeLakeBlob(s.x, s.y, s.r));
+  sands = sandSeeds.map(s=> makeBlob(s.x, s.y, s.r, 0.24, 48));
+}
+
+
+// Garantizar que el hoyo no quede sobre arena
+function ensureHoleSafe(){
+  const margin = 60;
+  let tries = 0;
+  const tooClose = () => Math.hypot(hole.x - player.x, hole.y - player.y) < 120;
+  const onSand  = () => circleTouchesPoly(sands,  hole.x, hole.y, hole.r + 4);
+  const onLake  = () => circleTouchesPoly(lakes,  hole.x, hole.y, hole.r + 2); // no tocar lagos
+  while ((onSand() || onLake() || tooClose()) && tries < 800){
+    hole.x = Math.random() * (worldW - margin*2) + margin;
+    hole.y = Math.random() * (playH  - margin*2) + margin;
+    tries++;
+  }
+}
+
+// ===== Club house (colocación, dibujo y colisión) =====
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+function placeHouse(){
+  const margin = 50; const halfD = Math.hypot(house.w, house.h)/2 + 6;
+  let tries = 0;
+  while(tries < 800){
+    const x = Math.random() * (worldW - margin*2 - house.w) + margin + house.w/2;
+    const y = Math.random() * (playH  - margin*2 - house.h) + margin + house.h/2;
+    const farFromSpawn = Math.hypot(x - player.x, y - player.y) > 120;
+    const farFromHole  = Math.hypot(x - hole.x,   y - hole.y) > (hole.r + halfD + 20);
+    const okSand = !circleTouchesPoly(sands, x, y, halfD);
+    const okLake = !circleTouchesPoly(lakes, x, y, halfD);
+    if(farFromSpawn && farFromHole && okSand && okLake){ house.x = x; house.y = y; return; }
+    tries++;
+  }
+  // fallback: centro superior
+  house.x = worldW*0.5; house.y = Math.max(60, playH*0.25);
+}
+function drawHouse(){
+  const L = house.x - house.w/2, R = house.x + house.w/2;
+  const T = house.y - house.h/2, B = house.y + house.h/2;
+  // sombra suelo
+  ctx.fillStyle = 'rgba(0,0,0,.22)';
+  ctx.beginPath(); ctx.ellipse(house.x, B, house.w*0.7, house.h*0.28, 0, 0, Math.PI*2); ctx.fill();
+
+  // cuerpo (rect redondeado + degradado sutil)
+  const r = 6;
+  const wallGrad = ctx.createLinearGradient(0, T, 0, B);
+  wallGrad.addColorStop(0, '#eee7db');
+  wallGrad.addColorStop(1, '#cfc3af');
+  ctx.beginPath();
+  ctx.moveTo(L+r, T);
+  ctx.lineTo(R-r, T); ctx.quadraticCurveTo(R, T, R, T+r);
+  ctx.lineTo(R, B-r); ctx.quadraticCurveTo(R, B, R-r, B);
+  ctx.lineTo(L+r, B); ctx.quadraticCurveTo(L, B, L, B-r);
+  ctx.lineTo(L, T+r); ctx.quadraticCurveTo(L, T, L+r, T);
+  ctx.closePath();
+  ctx.fillStyle = wallGrad; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = '#6b655c'; ctx.stroke();
+
+  // techo elegante (degradado)
+  const roofTop = T - house.h*0.55;
+  const roofGrad = ctx.createLinearGradient(0, roofTop, 0, T);
+  roofGrad.addColorStop(0, '#a23535');
+  roofGrad.addColorStop(1, '#7c2222');
+  ctx.beginPath();
+  ctx.moveTo(L-4, T+6);
+  ctx.lineTo(house.x, roofTop);
+  ctx.lineTo(R+4, T+6);
+  ctx.closePath();
+  ctx.fillStyle = roofGrad; ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#6e1c1c'; ctx.stroke();
+
+  // puerta con arco
+  const pw = house.w*0.22, ph = house.h*0.5;
+  const doorX = house.x - pw/2, doorY = B - ph;
+  ctx.fillStyle = '#2f2f2f';
+  ctx.beginPath();
+  ctx.moveTo(doorX, B);
+  ctx.lineTo(doorX, doorY + pw/2);
+  ctx.quadraticCurveTo(doorX+pw/2, doorY, doorX+pw, doorY + pw/2);
+  ctx.lineTo(doorX+pw, B);
+  ctx.closePath(); ctx.fill();
+
+  // ventanas
+  const vw = house.w*0.18, vh = house.h*0.28, vy = T + house.h*0.32;
+  const vx1 = house.x - house.w*0.28 - vw/2, vx2 = house.x + house.w*0.28 - vw/2;
+  ctx.fillStyle = '#ffffff'; ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.rect(vx1, vy, vw, vh); ctx.rect(vx2, vy, vw, vh); ctx.fill(); ctx.stroke();
+  // marcos
+  ctx.beginPath();
+  ctx.moveTo(vx1, vy+vh/2); ctx.lineTo(vx1+vw, vy+vh/2);
+  ctx.moveTo(vx1+vw/2, vy); ctx.lineTo(vx1+vw/2, vy+vh);
+  ctx.moveTo(vx2, vy+vh/2); ctx.lineTo(vx2+vw, vy+vh/2);
+  ctx.moveTo(vx2+vw/2, vy); ctx.lineTo(vx2+vw/2, vy+vh);
+  ctx.strokeStyle = 'rgba(0,0,0,.2)'; ctx.stroke();
+}
+function collideHouse(nx, ny){
+  const L = house.x - house.w/2, R = house.x + house.w/2;
+  const T = house.y - house.h/2, B = house.y + house.h/2;
+  const cx = clamp(nx, L, R), cy = clamp(ny, T, B);
+  let dx = nx - cx, dy = ny - cy;
+  const r2 = PLAYER_R*PLAYER_R; const d2 = dx*dx + dy*dy;
+  if(d2 > r2) return {x:nx, y:ny, bounced:false};
+  // elegir normal según penetración
+  let flipX=false, flipY=false;
+  if(dx===0 && dy===0){
+    const dl = Math.abs(nx - L), dr = Math.abs(R - nx), dt = Math.abs(ny - T), db = Math.abs(B - ny);
+    if(Math.min(dl,dr) < Math.min(dt,db)) flipX = true; else flipY = true;
+    dx = (dl < dr ? -1 : 1); dy = (dt < db ? -1 : 1);
+  } else if(Math.abs(dx) > Math.abs(dy)) flipX = true; else flipY = true;
+  const eps = 0.1;
+  if(flipX){ nx = cx + Math.sign(dx) * (PLAYER_R + eps); dir.x = -dir.x; }
+  if(flipY){ ny = cy + Math.sign(dy) * (PLAYER_R + eps); dir.y = -dir.y; }
+  return {x:nx, y:ny, bounced:true};
+}
+
+// ===== Carrito de golf =====
+function drawCart(){ if(!cart) return; const {x,y,w,h} = cart; const L=x-w/2,R=x+w/2,T=y-h/2,B=y+h/2;
+  // ruedas
+  ctx.fillStyle = '#222';
+  const rw = w*0.18, rh = h*0.32;
+  ctx.beginPath(); ctx.ellipse(L+w*0.22, B-2, rw*0.5, rh*0.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(R-w*0.22, B-2, rw*0.5, rh*0.5, 0, 0, Math.PI*2); ctx.fill();
+  // chasis
+  const grad = ctx.createLinearGradient(0,T,0,B);
+  grad.addColorStop(0,'#e9eef2'); grad.addColorStop(1,'#cfd8de');
+  ctx.fillStyle = grad; ctx.strokeStyle = '#5f6a73'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.rect(L, T+4, w, h-8); ctx.fill(); ctx.stroke();
+  // techo y parantes
+  ctx.strokeStyle = '#5f6a73'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(L+6,T+4); ctx.lineTo(L+6, T-8); ctx.moveTo(R-6,T+4); ctx.lineTo(R-6, T-8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(L+2,T-10); ctx.lineTo(R-2,T-10); ctx.stroke();
+}
+function scheduleCart(){ cartTimer = CART_MIN_INTERVAL + Math.random()*(CART_MAX_INTERVAL - CART_MIN_INTERVAL); }
+function spawnCart(){
+  const mode = Math.random() < 0.75 ? 0 : 1; // mayormente horizontal
+  if(mode===0){
+    const y = Math.random() * (playH - 100) + 50;
+    const dirR = Math.random() < 0.5 ? -1 : 1;
+    cart = { x: dirR<0 ? worldW + CART_W : -CART_W, y, vx: CART_SPEED*dirR, vy: 0, w:CART_W, h:CART_H };
+  } else {
+    const x = Math.random() * (worldW - 100) + 50;
+    const dirD = Math.random() < 0.5 ? -1 : 1;
+    cart = { x, y: dirD<0 ? playH + CART_H : -CART_H, vx: 0, vy: CART_SPEED*dirD, w:CART_W, h:CART_H };
+  }
+}
+function collideRect(nx, ny, rect){
+  const L = rect.x - rect.w/2, R = rect.x + rect.w/2;
+  const T = rect.y - rect.h/2, B = rect.y + rect.h/2;
+  const cx = clamp(nx, L, R), cy = clamp(ny, T, B);
+  let dx = nx - cx, dy = ny - cy;
+  const r2 = PLAYER_R*PLAYER_R; const d2 = dx*dx + dy*dy;
+  if(d2 > r2) return {x:nx, y:ny, bounced:false};
+  let flipX=false, flipY=false;
+  if(dx===0 && dy===0){
+    const dl = Math.abs(nx - L), dr = Math.abs(R - nx), dt = Math.abs(ny - T), db = Math.abs(B - ny);
+    if(Math.min(dl,dr) < Math.min(dt,db)) flipX = true; else flipY = true;
+    dx = (dl < dr ? -1 : 1); dy = (dt < db ? -1 : 1);
+  } else if(Math.abs(dx) > Math.abs(dy)) flipX = true; else flipY = true;
+  const eps = 0.1;
+  if(flipX){ nx = cx + Math.sign(dx) * (PLAYER_R + eps); dir.x = -dir.x; }
+  if(flipY){ ny = cy + Math.sign(dy) * (PLAYER_R + eps); dir.y = -dir.y; }
+  return {x:nx, y:ny, bounced:true};
+}
+
+
+// FX de subida de nivel
+function spawnLevelFX(){
+  const N = 100; // confetti
+  const originX = worldW/2, originY = 56;
+  for(let i=0;i<N;i++){
+    const a = Math.random()*Math.PI*2;
+    const sp = 160 + Math.random()*280;
+    const vx = Math.cos(a)*sp;
+    const vy = Math.sin(a)*sp - 200;
+    const size = 3 + Math.random()*3;
+    const ttl = 0.9 + Math.random()*0.8;
+    const hue = Math.floor(Math.random()*360);
+    const col = `hsl(${hue} 90% 60%)`;
+    fxConfetti.push({x:originX,y:originY,vx,vy,rot:Math.random()*Math.PI,vr:(-4+Math.random()*8),size,ttl,life:ttl,color:col});
+  }
+  waveT = 1.0; // onda expansiva
+}
+
+// Hoyo
+let hole = { x: 0, y: 0, r: 18 }; // más chico
+let lakes = []; // [{x,y,r}]
+let sands = []; // [{x,y,r}]
+let level = 1; let levelAnim = 0; let fxConfetti = []; let waveT = 0; let edgeCD = 0; let house = { x:0, y:0, w:68, h:36 }; let houseCD = 0; let speedBoost = 1;
+let cart = null; let cartTimer = 0; let cartCD = 0;
+let falling = false; // compat: usado por setDir() para no penalizar en "caída" (hoy no se usa la caída)
+
+// Jugador + energía
+const player = { x: 0, y: 0, z: 0, vz: 0 };
+let dir = { x: 1, y: 0 }; // avance constante
+let meter = 0;            // se llena con distancia/penalizaciones (al llenarse, perdés)
+function setDir(nx, ny){
+  // bloquear reversa directa
+  if (nx === -dir.x && ny === -dir.y) return;
+  // ignorar si es la misma dirección
+  if (nx === dir.x && ny === dir.y) return;
+  // penalizar el giro
+  if (!falling && meter < DIST_MAX) { meter = Math.min(DIST_MAX, meter + TURN_PENALTY); }
+  dir.x = nx; dir.y = ny;
+}
+function reset(regen=false){
+  resize(); refreshWorldSize();
+  player.x = worldW/2; player.y = playH/2; player.z = 0; player.vz = 0;
+  dir.x = 1; dir.y = 0; meter = 0;
+  // colocar hoyo lejos del spawn
+  const margin = 60;
+  do {
+    hole.x = Math.random() * (worldW - margin*2) + margin;
+    hole.y = Math.random() * (playH - margin*2) + margin;
+  } while (Math.hypot(hole.x - player.x, hole.y - player.y) < 120);
+    // generar lagos y bancos de arena con formas orgánicas, evitando spawn y hoyo
+  // mantener el mismo layout salvo que pidamos regenerar
+  if (regen || lakes.length===0 || sands.length===0) { levelSeed = (levelSeed*1664525 + 1013904223)>>>0; rng = seededRNG(levelSeed); designLevel(); }
+  grassPattern = makeGrassPattern();
+  // reubicar hoyo si cayó sobre arena (o demasiado cerca del spawn)
+  ensureHoleSafe();
+  placeHouse();
+  // carrito: preparar nueva aparición
+  cart = null; scheduleCart(); cartCD = 0; speedBoost = 1;
+  needsTickReset = true; // evitar dt gigante al reiniciar/nivel nuevo
+}
+function restartLevel(){ reset(false); }
+function nextLevel(){ level = Math.min(100, level+1); levelAnim = 1.6; spawnLevelFX(); reset(true); }
+reset(true);
+
+// ===== Input =====
+let wantJump = false; // por qué: salto una vez por pulsación
+function onKey(e, down){
+  const key = (e.key.length===1 ? e.key : e.key.toLowerCase());
+  if(['arrowleft','arrowright','arrowup','arrowdown','w','a','s','d',' '].includes(key)) e.preventDefault();
+  if(down){
+    if(key==='arrowleft' || key==='a') setDir(-1,0);
+    else if(key==='arrowright' || key==='d') setDir(1,0);
+    else if(key==='arrowup' || key==='w') setDir(0,-1);
+    else if(key==='arrowdown' || key==='s') setDir(0,1);
+    if(!e.repeat && key===' ') wantJump = true;
+  }
+}
+window.addEventListener('keydown', e=> onKey(e,true));
+window.addEventListener('keyup', e=> onKey(e,false));
+
+// ===== Loop =====
+let last = performance.now();
+function loop(){
+  const t = performance.now();
+  let dt = (t - last)/1000;
+  if (needsTickReset) { dt = 0; needsTickReset = false; }
+  dt = Math.min(0.05, Math.max(0, dt));
+  last = t;
+  if(edgeCD>0) edgeCD -= dt; if(houseCD>0) houseCD -= dt; if(cartCD>0) cartCD -= dt; speedBoost += (1 - speedBoost) * 4 * dt;
+  // actualizar/spawnear carrito
+  if(!cart){ if(cartTimer>0) cartTimer -= dt; if(cartTimer<=0) spawnCart(); }
+  else {
+    cart.x += (cart.vx||0) * dt; cart.y += (cart.vy||0) * dt;
+    const off = cart.x < -CART_W*1.5 || cart.x > worldW + CART_W*1.5 || cart.y < -CART_H*1.5 || cart.y > playH + CART_H*1.5;
+    if(off){ cart = null; scheduleCart(); }
+  }
+
+  // Movimiento con energía por distancia
+  let speedMul = 1, drainMul = 1;
+  if(circleTouchesPoly(sands, player.x, player.y, PLAYER_R)){ speedMul *= SAND_SLOW; drainMul *= SAND_DRAIN; }
+  let step = SPEED * speedMul * speedBoost * dt; // boost temporal en rebotes con la casa
+
+  let nx = player.x + dir.x * step;
+  let ny = player.y + dir.y * step;
+
+  // Rebotar bordes sin detenerse (si hay energía)
+  if(step > 0){
+    if (nx <= PLAYER_R) { nx = PLAYER_R; dir.x = Math.abs(dir.x); if (edgeCD <= 0) { level = Math.max(1, level-1); edgeCD = 0.8; } }
+    else if (nx >= worldW - PLAYER_R) { nx = worldW - PLAYER_R; dir.x = -Math.abs(dir.x); if (edgeCD <= 0) { level = Math.max(1, level-1); edgeCD = 0.8; } }
+    if (ny <= PLAYER_R) { ny = PLAYER_R; dir.y = Math.abs(dir.y); if (edgeCD <= 0) { level = Math.max(1, level-1); edgeCD = 0.8; } }
+    else if (ny >= playH - PLAYER_R) { ny = playH - PLAYER_R; dir.y = -Math.abs(dir.y); if (edgeCD <= 0) { level = Math.max(1, level-1); edgeCD = 0.8; } }
+  }
+
+  // Colisión con casita (rebote)
+  if(house && houseCD <= 0){
+    const res = collideHouse(nx, ny);
+    if(res.bounced){ nx = res.x; ny = res.y; houseCD = 0.12; speedBoost = Math.max(speedBoost, 1.85); }
+  }
+  // Colisión con carrito (rebote como casita)
+  if(cart && cartCD <= 0){
+    const res2 = collideRect(nx, ny, cart);
+    if(res2.bounced){ nx = res2.x; ny = res2.y; cartCD = 0.12; speedBoost = Math.max(speedBoost, 1.85); }
+  }
+
+  // Aplicar movimiento efectivo y descontar distancia
+  const moved = Math.hypot(nx - player.x, ny - player.y);
+  player.x = nx; player.y = ny;
+  meter = Math.min(DIST_MAX, meter + moved * drainMul);
+
+  // perder por llenar el medidor
+  if(meter >= DIST_MAX){ restartLevel(); requestAnimationFrame(loop); return; }
+
+  // lago: tocar agua reinicia al instante
+  if(circleTouchesPoly(lakes, player.x, player.y, PLAYER_R*LAKE_EDGE_SCALE)) { level = Math.max(1, level-1); restartLevel(); requestAnimationFrame(loop); return; }
+
+  // entrar al hoyo → pasar de nivel inmediato
+  {
+    const d = Math.hypot(player.x - hole.x, player.y - hole.y);
+    if(d <= hole.r + PLAYER_R) { nextLevel(); requestAnimationFrame(loop); return; }
+  }
+
+  // Salto (eje Z simulado, no afecta energía)
+  if(wantJump && player.z===0 && player.vz===0){ player.vz = JUMP_V0; wantJump = false; }
+  if(player.vz !== 0 || player.z>0){
+    player.vz -= GRAVITY * dt;
+    player.z += player.vz * dt;
+    if(player.z <= 0){ player.z = 0; player.vz = 0; }
+  }
+
+  // ===== Dibujo =====
+  ctx.clearRect(0,0, worldW, worldH);
+  // Fondo con textura de pasto
+  if(!grassPattern) grassPattern = makeGrassPattern();
+  if(grassPattern && ctx.createPattern){
+    ctx.fillStyle = grassPattern; ctx.fillRect(0,0, worldW, worldH);
+  } else {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg') || '#189d3a';
+    ctx.fillRect(0,0, worldW, worldH);
+  }
+
+  // Bancos de arena (formas orgánicas)
+  for(const s of sands){
+    drawBlobFill(s, [{pos:0, color:'#e8d991'}, {pos:1, color:'#cbb874'}]);
+  }
+  // Lagos (formas orgánicas)
+  for(const l of lakes){
+    drawBlobFill(l, [{pos:0, color:'#62c2ff'}, {pos:0.8, color:'#1d79c5'}, {pos:1, color:'#185f99'}]);
+  }
+
+  // Carrito
+  drawCart();
+
+  // Club House
+  drawHouse();
+
+  // Hoyo (profundidad)
+  const g = ctx.createRadialGradient(hole.x, hole.y, hole.r*0.15, hole.x, hole.y, hole.r);
+  g.addColorStop(0, '#000');
+  g.addColorStop(0.7, '#0c0c0c');
+  g.addColorStop(1, '#000');
+  ctx.beginPath(); ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI*2);
+  ctx.fillStyle = g; ctx.fill();
+  // Borde del hoyo
+  ctx.save();
+  ctx.lineWidth = 8; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,.65)';
+  ctx.beginPath(); ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+
+  // Sombra
+  const r = PLAYER_R;
+  const shadowScale = Math.max(0.3, 1 - player.z/200);
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.beginPath();
+  ctx.ellipse(player.x, player.y + r*0.5, r*0.9*shadowScale, r*0.35*shadowScale, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Pelota
+  const drawY = player.y - player.z;
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ball') || '#ffffff';
+  ctx.beginPath(); ctx.arc(player.x, drawY, r, 0, Math.PI*2); ctx.fill();
+
+  // HUD: NIVEL centrado con animación rimbombante
+  {
+    // FX: confetti
+    for(let i=fxConfetti.length-1;i>=0;i--){
+      const p = fxConfetti[i];
+      p.vy += 800*dt;
+      p.x += p.vx*dt; p.y += p.vy*dt; p.rot += p.vr*dt; p.life -= dt;
+      if(p.life<=0){ fxConfetti.splice(i,1); continue; }
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      ctx.globalAlpha = Math.max(0, p.life/p.ttl);
+      ctx.fillStyle = p.color; ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size);
+      ctx.restore();
+    }
+    // FX: onda expansiva
+    if(waveT>0){
+      waveT = Math.max(0, waveT - dt);
+      const t = 1 - waveT; // 0..1
+      const rMin = 20, rMax = Math.hypot(worldW, worldH)*0.3;
+      const R = rMin + (rMax - rMin)*t;
+      ctx.save();
+      ctx.lineWidth = 6*(1-t)+2;
+      ctx.strokeStyle = `rgba(255,255,255,${0.35*(1-t)})`;
+      ctx.beginPath(); ctx.arc(worldW/2, 56, R, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+
+    const title = `${level} · ${rankFor(level)}`;
+    if(levelAnim > 0){ levelAnim = Math.max(0, levelAnim - dt); }
+    const dur = 1.4; const t = 1 - Math.max(0, levelAnim/dur);
+    // easeOutBack para rebote
+    const c1=1.70158, c3=c1+1; const ease = 1 + c3*Math.pow(t-1,3) + c1*Math.pow(t-1,2);
+    const scale = 1 + 0.65 * ease; // más grande
+    const alpha = 0.95;
+
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.globalAlpha = alpha;
+    const isPopping = levelAnim > 0;
+    if (isPopping) { ctx.shadowColor = 'rgba(255,255,255,0.9)'; ctx.shadowBlur = 22 + 22*ease; }
+    else { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; }
+    const baseSize = 48; // tamaño base mayor
+    ctx.font = `800 ${Math.round(baseSize * scale)}px system-ui,Segoe UI,Roboto,Arial`;
+    const tx = worldW/2, ty = 56;
+    ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(0,0,0,.55)';
+    ctx.strokeText(title, tx, ty);
+    ctx.fillStyle = '#ffffff'; ctx.fillText(title, tx, ty);
+    ctx.restore();
+  }
+
+  // Barra de energía (abajo)
+  // Panel inferior debajo del mapa
+  const pct = meter / DIST_MAX; // 0..1 (si llega a 1, pierde)
+  const panelY = playH;
+  ctx.fillStyle = 'rgba(0,0,0,.20)';
+  ctx.fillRect(0, panelY, worldW, PANEL_H);
+  // separador
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.fillRect(0, panelY, worldW, 1);
+  // barra centrada en el panel
+  const marginX = 12; const barW = worldW - marginX*2; const barY = panelY + (PANEL_H - BAR_H)/2;
+  ctx.fillStyle = 'rgba(255,255,255,.25)';
+  ctx.fillRect(marginX, barY, barW, BAR_H);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(marginX, barY, Math.floor(barW * pct), BAR_H);
+  // Pelota blanca al extremo de la barra
+  const knobX = Math.max(marginX, Math.min(marginX + barW, marginX + Math.floor(barW * pct)));
+  const knobY = barY + BAR_H/2;
+  ctx.beginPath(); ctx.arc(knobX, knobY, BAR_H*0.6, 0, Math.PI*2);
+  ctx.fillStyle = '#ffffff'; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.stroke();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ===== Dev quick tests (no alteran estado final) =====
+(function devTests(){
+  try{
+    console.assert(typeof falling !== 'undefined', 'Var "falling" debe existir');
+    console.assert(!circleTouchesPoly(sands, hole.x, hole.y, hole.r+1), 'Hoyo no debe estar sobre arena tras reset');
+    console.assert(!circleTouchesPoly(lakes, hole.x, hole.y, hole.r+1), 'Hoyo no debe tocar lagos tras reset');
+    // House placement sanity
+    const halfD = Math.hypot(house.w, house.h)/2;
+    console.assert(!circleTouchesPoly(lakes, house.x, house.y, halfD+1), 'Casa no debe tocar lagos');
+    console.assert(!circleTouchesPoly(sands, house.x, house.y, halfD+1), 'Casa no debe tocar arena');
+    console.assert(SAND_SLOW * SAND_DRAIN > 1, 'Arena: el producto SAND_SLOW*SAND_DRAIN debe ser > 1 para llenar más rápido');
+    const saved = { dir:{...dir}, meter_0: meter };
+    // No debe permitir reversa
+    setDir(-saved.dir.x, -saved.dir.y);
+    console.assert(dir.x===saved.dir.x && dir.y===saved.dir.y, 'setDir: bloqueo de reversa falló');
+    // Penaliza al girar (90°)
+    const before = meter; const nx = saved.dir.y, ny = -saved.dir.x; setDir(nx, ny);
+    console.assert(meter >= before, 'setDir: no aplicó penalización al girar');
+    // Restaurar
+    dir.x = saved.dir.x; dir.y = saved.dir.y; meter = saved.meter_0;
+    console.log('Dev tests OK');
+  }catch(e){ console.error('Dev tests error', e); }
+})();
+</script>
+</body>
+</html>
