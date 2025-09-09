@@ -137,8 +137,189 @@
   <!-- Botón eliminado, ahora está dentro de la cruz -->
     </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
   <script type="module">
+  // Simple Physics Fallback when Matter.js is not available
+  window.SimpleMatter = {
+    Engine: {
+      create: () => ({
+        world: { gravity: { y: 1 }, bodies: [] },
+        timing: { timeScale: 1 }
+      }),
+      clear: () => {},
+      run: () => {}
+    },
+    Render: {
+      create: (options) => ({
+        element: options.element,
+        engine: options.engine,
+        canvas: null,
+        context: null,
+        options: options.options || {}
+      }),
+      run: (render) => {
+        if (!render.canvas) {
+          render.canvas = document.createElement('canvas');
+          render.canvas.width = 800;
+          render.canvas.height = 1600;
+          render.canvas.style.borderRadius = '12px';
+          render.canvas.style.background = '#000';
+          render.element.appendChild(render.canvas);
+          render.context = render.canvas.getContext('2d');
+        }
+      }
+    },
+    Runner: {
+      create: () => ({}),
+      run: (runner, engine) => {
+        setInterval(() => {
+          if (window.gameLoop) window.gameLoop();
+        }, 16);
+      }
+    },
+    World: {
+      add: (world, bodies) => {
+        if (!Array.isArray(bodies)) bodies = [bodies];
+        world.bodies.push(...bodies);
+      },
+      remove: (world, bodies) => {
+        if (!Array.isArray(bodies)) bodies = [bodies];
+        bodies.forEach(body => {
+          const index = world.bodies.indexOf(body);
+          if (index > -1) world.bodies.splice(index, 1);
+        });
+      },
+      clear: () => {}
+    },
+    Bodies: {
+      rectangle: (x, y, w, h, options = {}) => ({
+        position: { x, y },
+        velocity: { x: 0, y: 0 },
+        angle: 0,
+        angularVelocity: 0,
+        bounds: { min: { x: x - w/2, y: y - h/2 }, max: { x: x + w/2, y: y + h/2 }},
+        width: w,
+        height: h,
+        render: options.render || { fillStyle: '#fff' },
+        label: options.label || '',
+        isStatic: options.isStatic || false,
+        isSensor: options.isSensor || false,
+        plugin: options.plugin || {},
+        ...options
+      }),
+      circle: (x, y, r, options = {}) => ({
+        position: { x, y },
+        velocity: { x: 0, y: 0 },
+        angle: 0,
+        angularVelocity: 0,
+        bounds: { min: { x: x - r, y: y - r }, max: { x: x + r, y: y + r }},
+        radius: r,
+        render: options.render || { fillStyle: '#fff' },
+        label: options.label || '',
+        isStatic: options.isStatic || false,
+        isSensor: options.isSensor || false,
+        plugin: options.plugin || {},
+        ...options
+      })
+    },
+    Body: {
+      setPosition: (body, pos) => { body.position = pos; },
+      setVelocity: (body, vel) => { body.velocity = vel; },
+      setAngle: (body, angle) => { body.angle = angle; },
+      setAngularVelocity: (body, vel) => { body.angularVelocity = vel; },
+      setInertia: () => {},
+      create: (options) => ({ ...options }),
+      nextGroup: () => 1
+    },
+    Constraint: {
+      create: (options) => ({ ...options })
+    },
+    Events: {
+      on: (engine, event, callback) => {
+        if (event === 'beforeUpdate') {
+          window.beforeUpdateCallbacks = window.beforeUpdateCallbacks || [];
+          window.beforeUpdateCallbacks.push(callback);
+        } else if (event === 'afterRender') {
+          window.afterRenderCallbacks = window.afterRenderCallbacks || [];
+          window.afterRenderCallbacks.push(callback);
+        }
+      }
+    },
+    Vector: {
+      magnitude: (v) => Math.sqrt(v.x * v.x + v.y * v.y),
+      sub: (a, b) => ({ x: a.x - b.x, y: a.y - b.y })
+    },
+    Mouse: {
+      create: () => ({ position: { x: 0, y: 0 }})
+    },
+    MouseConstraint: {
+      create: () => ({})
+    },
+    Vertices: {
+      create: (points) => points
+    },
+    Composite: {
+      create: (options) => ({ ...options })
+    }
+  };
+
+  // Use fallback if Matter is not available
+  if (typeof Matter === 'undefined') {
+    window.Matter = window.SimpleMatter;
+    console.log('Using simplified physics fallback');
+    
+    // Simple game loop for fallback physics
+    window.gameLoop = function() {
+      if (window.beforeUpdateCallbacks) {
+        window.beforeUpdateCallbacks.forEach(cb => cb());
+      }
+      
+      // Simple drawing
+      if (window.render && window.render.context && window.world) {
+        const ctx = window.render.context;
+        ctx.clearRect(0, 0, 800, 1600);
+        
+        // Draw all bodies
+        window.world.bodies.forEach(body => {
+          if (!body) return;
+          
+          ctx.save();
+          ctx.translate(body.position.x, body.position.y);
+          ctx.rotate(body.angle || 0);
+          
+          if (body.render && body.render.fillStyle) {
+            ctx.fillStyle = body.render.fillStyle;
+          } else {
+            ctx.fillStyle = '#fff';
+          }
+          
+          if (body.render && body.render.strokeStyle) {
+            ctx.strokeStyle = body.render.strokeStyle;
+            ctx.lineWidth = body.render.lineWidth || 1;
+          }
+          
+          if (body.radius) {
+            // Circle
+            ctx.beginPath();
+            ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+            ctx.fill();
+            if (body.render && body.render.strokeStyle) ctx.stroke();
+          } else if (body.width && body.height) {
+            // Rectangle
+            ctx.fillRect(-body.width/2, -body.height/2, body.width, body.height);
+            if (body.render && body.render.strokeStyle) {
+              ctx.strokeRect(-body.width/2, -body.height/2, body.width, body.height);
+            }
+          }
+          
+          ctx.restore();
+        });
+      }
+      
+      if (window.afterRenderCallbacks) {
+        window.afterRenderCallbacks.forEach(cb => cb());
+      }
+    };
+  }
 // Mostrar video de YouTube cuando el sensor-premio detecta impacto con ragdoll
 function showYoutubeVideo() {
   const container = document.getElementById('youtube-video-container');
@@ -1148,6 +1329,15 @@ function createMiniRagdoll(x, y, scale = 0.45) {
       window.joystickState.y = Math.max(-1, Math.min(1, dy));
     };
     window.addEventListener('DOMContentLoaded', function() {
+      // Simple fallback for createJoystick3D
+      if (typeof createJoystick3D === 'undefined') {
+        window.createJoystick3D = function(containerId) {
+          console.log('Joystick3D fallback loaded');
+          // Hide the joystick container since we're using button controls
+          const container = document.getElementById(containerId);
+          if (container) container.style.display = 'none';
+        };
+      }
       createJoystick3D('joystick3d-container');
     });
 
